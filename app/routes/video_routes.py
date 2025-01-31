@@ -26,7 +26,7 @@ def upload_to_s3(file_path):
     try:
         s3.upload_file(file_path, bucket_name, s3_key)
         print(f"Upload Successful: {s3_key}")
-        os.remove(file_path)  # מחיקת הקובץ לאחר ההעלאה
+        os.remove(file_path) 
     except Exception as e:
         print(f"Failed to upload video: {e}")
 
@@ -67,21 +67,24 @@ async def live_stream(websocket: WebSocket):
 
 @router.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
-    """
-    API להעלאת וידאו מה-Frontend
-    """
-    try:
-        # קריאת הקובץ שהועלה
-        video_bytes = await file.read()
+  
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
 
-        # שמירת הקובץ לדיסק (או המשך עיבוד)
-        with open(f"./uploaded_videos/{file.filename}", "wb") as f:
-            f.write(video_bytes)
-            print("Uploaded video")
+    try:
+        os.makedirs("./uploaded_videos", exist_ok=True)
+
+        file_path = f"./uploaded_videos/{file.filename}"
+
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+
+        upload_to_s3(file_path)
 
         return {"status": "success", "message": "Video uploaded successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 def process_frame(frame):

@@ -5,22 +5,22 @@ services:
     container_name: bee_backend
     ports:
       - "8000:8000"
-    depends_on:
-      - mongo
     environment:
-      - MONGO_URI=mongodb://mongo:27017
-      - MONGO_DB_NAME=bee_vision_db
+      MONGO_URI : ${MONGO_URI}
+      MONGO_DB_NAME : ${MONGO_DB_NAME}
     devices:
       - "/dev/video0:/dev/video0"  
     privileged: true  
+    env_file:
+      - .env
 
-  mongo:
-    image: mongo:5.0
-    container_name: bee_mongo
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
+  # mongo:
+  #   image: mongo:5.0
+  #   container_name: bee_mongo
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - mongo_data:/data/db
 
 volumes:
   mongo_data:
