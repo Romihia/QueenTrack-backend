@@ -97,63 +97,45 @@ async def live_stream(websocket: WebSocket):
 
     timestamp = int(time.time())
     os.makedirs("./temp_videos", exist_ok=True)
-    video_filename = f"./temp_videos/stream_{timestamp}.webm"
     processed_filename = f"./temp_videos/processed_stream_{timestamp}.mp4"
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    
+
+    video_writer = None
+    frame_count = 0
+
     try:
-        # שלב 1: שמירת הזרם לקובץ
-        with open(video_filename, "wb") as f:
-            while True:
-                data = await websocket.receive_bytes()
-                print(f"Received {len(data)} bytes")
-                f.write(data)
-                
+        while True:
+            data = await websocket.receive_bytes()
+            np_arr = np.frombuffer(data, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+            if frame is None:
+                print("Invalid frame received")
+                continue
+
+            processed_frame = process_frame(frame)
+
+            if video_writer is None:
+                height, width = processed_frame.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                fps = 20.0 
+                video_writer = cv2.VideoWriter(processed_filename, fourcc, fps, (width, height))
+                if not video_writer.isOpened():
+                    raise Exception("Failed to open VideoWriter")
+
+            video_writer.write(processed_frame)
+            frame_count += 1
+            print(f"Processed frame {frame_count}")
+
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
-        print(f"Error in WebSocket: {e}")
+        print(f"Error: {e}")
     finally:
-        # שלב 2: עיבוד הקובץ השלם
-        if os.path.exists(video_filename) and os.path.getsize(video_filename) > 0:
-            print(f"Processing video: {video_filename}")
-            cap = cv2.VideoCapture(video_filename)
-            if not cap.isOpened():
-                print("Failed to open video file - ensure OpenCV is built with FFmpeg support")
-            else:
-                fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
-                if width > 0 and height > 0:
-                    out = cv2.VideoWriter(processed_filename, fourcc, fps, (width, height))
-                    frame_count = 0
-                    
-                    while True:
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-                        processed_frame = process_frame(frame)
-                        out.write(processed_frame)
-                        frame_count += 1
-                    
-                    cap.release()
-                    out.release()
-                    print(f"Processed {frame_count} frames")
-                    
-                    if frame_count > 0:
-                        print(f"Uploading {processed_filename} to S3...")
-                        upload_to_s3(processed_filename)
-                    else:
-                        print("No frames processed")
-                else:
-                    print("Invalid video dimensions")
-        
-        # ניקוי
-        if os.path.exists(video_filename):
-            os.remove(video_filename)
-            print(f"Cleaned up temporary file: {video_filename}")
+        if video_writer:
+            video_writer.release()
+            print(f"Saved processed video: {processed_filename}")
+            upload_to_s3(processed_filename)
+            os.remove(processed_filename)
 
 @router.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
