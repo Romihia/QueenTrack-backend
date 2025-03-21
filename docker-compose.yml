@@ -6,13 +6,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MONGO_URI : ${MONGO_URI}
-      MONGO_DB_NAME : ${MONGO_DB_NAME}
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB_NAME: ${MONGO_DB_NAME}
     devices:
-      - "/dev/video0:/dev/video0"  
-    privileged: true  
+      - "/dev/video0:/dev/video0"
+    privileged: true
     env_file:
       - .env
+    volumes:
+      - .:/app  
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
 
   # mongo:
   #   image: mongo:5.0

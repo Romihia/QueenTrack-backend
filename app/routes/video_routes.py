@@ -30,39 +30,28 @@ def upload_to_s3(file_path):
     except Exception as e:
         print(f"Failed to upload video: {e}")
 
+
 @router.websocket("/live-stream")
 async def live_stream(websocket: WebSocket):
- 
-    print("Attempting to accept WebSocket connection")
     await websocket.accept()
+    print("WebSocket connected")
 
     timestamp = int(time.time())
-    video_filename = f"./temp_videos/stream_{timestamp}.mp4"
     os.makedirs("./temp_videos", exist_ok=True)
+    video_filename = f"./temp_videos/stream_{timestamp}.mp4"
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    frame_width, frame_height = 640, 480
-    fps = 20.0
-    video_writer = cv2.VideoWriter(video_filename, fourcc, fps, (frame_width, frame_height))
+    with open(video_filename, "wb") as f:
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                f.write(data)
+        except WebSocketDisconnect:
+            print("WebSocket disconnected. Uploading to S3...")
+            upload_to_s3(video_filename)
+        except Exception as e:
+            print(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            if frame is not None:
-                video_writer.write(frame)
-
-    except WebSocketDisconnect:
-        print("WebSocket disconnected. Saving and uploading video...")
-        video_writer.release()
-        upload_to_s3(video_filename)
-
-    except Exception as e:
-        video_writer.release()
-        print(f"Error during streaming: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
     
 
 @router.post("/upload")
