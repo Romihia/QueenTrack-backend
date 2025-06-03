@@ -3,10 +3,8 @@ import cv2
 import numpy as np
 import time
 import os
-import boto3
 import json
 from starlette.websockets import WebSocketDisconnect
-from app.core.config import settings
 from ultralytics import YOLO
 from datetime import datetime
 from app.services.service import create_event, update_event, get_all_events
@@ -27,6 +25,16 @@ model_classify = YOLO("best.pt")   # Classification model
 # Define the Region of Interest (ROI) for the hive entrance
 # Format: [x_min, y_min, x_max, y_max] as a rectangle
 HIVE_ENTRANCE_ROI = [200, 300, 400, 450]  # Example values - adjust based on your camera setup
+
+# Video storage configuration
+VIDEOS_DIR = "/data/videos"
+os.makedirs(VIDEOS_DIR, exist_ok=True)
+
+# Create subdirectories for different video types
+os.makedirs(f"{VIDEOS_DIR}/outside_videos", exist_ok=True)
+os.makedirs(f"{VIDEOS_DIR}/temp_videos", exist_ok=True)
+os.makedirs(f"{VIDEOS_DIR}/uploaded_videos", exist_ok=True)
+os.makedirs(f"{VIDEOS_DIR}/processed_videos", exist_ok=True)
 
 # Bee tracking state (simple version for a single bee)
 bee_state = {
@@ -64,28 +72,29 @@ async def set_camera_config(config: CameraConfig):
     
     return {"status": "success", "message": "Camera configuration saved successfully"}
 
-def upload_to_s3(file_path):
+def save_video_locally(file_path):
     """
-    Upload file to S3
+    Save video locally and return the URL for accessing it
     """
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        region_name=settings.AWS_S3_REGION
-    )
-
-    bucket_name = settings.AWS_S3_BUCKET_NAME
-    s3_key = f"data_bee/{os.path.basename(file_path)}"
-
     try:
-        s3.upload_file(file_path, bucket_name, s3_key)
-        print(f"Upload Successful: {s3_key}")
-        s3_url = f"https://{bucket_name}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
-        os.remove(file_path)
-        return s3_url
+        # Get relative path from the videos directory
+        videos_dir = "/data/videos"
+        
+        # If the file is already in the videos directory, create relative path
+        if file_path.startswith(videos_dir):
+            relative_path = file_path[len(videos_dir):].lstrip('/')
+            local_url = f"/videos/{relative_path}"
+        else:
+            # For files outside the videos directory, just use the filename
+            filename = os.path.basename(file_path)
+            local_url = f"/videos/{filename}"
+        
+        print(f"Video saved locally: {file_path}")
+        print(f"Video accessible at: {local_url}")
+        
+        return local_url
     except Exception as e:
-        print(f"Failed to upload video: {e}")
+        print(f"Failed to process local video: {e}")
         return None
 
 def format_time(milliseconds):
@@ -120,11 +129,12 @@ def start_external_camera():
         return None
     
     # Create output directory if it doesn't exist
-    os.makedirs("./outside_videos", exist_ok=True)
+    outside_videos_dir = f"{VIDEOS_DIR}/outside_videos"
+    os.makedirs(outside_videos_dir, exist_ok=True)
     
     # Generate output filename with timestamp
     timestamp = int(time.time())
-    output_path = f"./outside_videos/video_outside_{timestamp}.mp4"
+    output_path = f"{outside_videos_dir}/video_outside_{timestamp}.mp4"
     external_camera["output_file"] = output_path
     
     # Check if we have a configured external camera
@@ -143,7 +153,7 @@ def start_external_camera():
             print(f"[MOCK] Using configured external camera: {camera_config['external_camera_id']}")
             
             # Set mock stream - in a real implementation, this might be a URL to a streaming server
-            external_camera["stream_url"] = f"/outside_videos/stream_{timestamp}.m3u8"  # Example
+            external_camera["stream_url"] = f"/videos/outside_videos/stream_{timestamp}.m3u8"  # Example
         except Exception as e:
             print(f"Error starting external camera: {e}")
             # Fall back to mock implementation if there's an error
@@ -402,9 +412,9 @@ async def handle_bee_tracking(current_status, current_time):
         video_path = stop_external_camera()
         video_url = None
         
-        # If a video was recorded, upload it to S3
+        # If a video was recorded, save locally and get URL
         if video_path and os.path.exists(video_path):
-            video_url = upload_to_s3(video_path)
+            video_url = save_video_locally(video_path)
         
         # If we have an ongoing event, update it
         if bee_state["current_event_id"]:
@@ -437,8 +447,9 @@ async def live_stream(websocket: WebSocket):
     print("WebSocket connected")
 
     timestamp = int(time.time())
-    os.makedirs("./temp_videos", exist_ok=True)
-    processed_filename = f"./temp_videos/processed_stream_{timestamp}.mp4"
+    temp_videos_dir = f"{VIDEOS_DIR}/temp_videos"
+    os.makedirs(temp_videos_dir, exist_ok=True)
+    processed_filename = f"{temp_videos_dir}/processed_stream_{timestamp}.mp4"
 
     video_writer = None
     frame_count = 0
@@ -491,10 +502,10 @@ async def live_stream(websocket: WebSocket):
             video_writer.release()
             print(f"Saved processed video: {processed_filename}")
             
-            # Upload video to S3 and get URL
-            video_url = upload_to_s3(processed_filename)
+            # Save video locally and get URL
+            video_url = save_video_locally(processed_filename)
             
-            # If we have an ongoing event and the video was successfully uploaded, update the event
+            # If we have an ongoing event and the video was successfully saved, update the event
             if bee_state["current_event_id"] and video_url:
                 event_update = {"video_url": video_url}
                 await update_event(bee_state["current_event_id"], event_update)
@@ -513,11 +524,13 @@ async def upload_video(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No file provided")
 
     try:
-        os.makedirs("./uploaded_videos", exist_ok=True)
-        os.makedirs("./processed_videos", exist_ok=True)
+        uploaded_videos_dir = f"{VIDEOS_DIR}/uploaded_videos"
+        processed_videos_dir = f"{VIDEOS_DIR}/processed_videos"
+        os.makedirs(uploaded_videos_dir, exist_ok=True)
+        os.makedirs(processed_videos_dir, exist_ok=True)
 
-        input_path = f"./uploaded_videos/{file.filename}"
-        output_path = f"./processed_videos/processed_{file.filename}"
+        input_path = f"{uploaded_videos_dir}/{file.filename}"
+        output_path = f"{processed_videos_dir}/processed_{file.filename}"
 
         # Save uploaded file
         with open(input_path, "wb") as f:
@@ -562,10 +575,10 @@ async def upload_video(file: UploadFile = File(...)):
         if external_camera["is_recording"]:
             stop_external_camera()
 
-        # Upload processed video to S3
-        video_url = upload_to_s3(output_path)
+        # Save processed video locally and get URL
+        video_url = save_video_locally(output_path)
         
-        # If we have an ongoing event and the video was uploaded, update the event
+        # If we have an ongoing event and the video was saved, update the event
         if bee_state["current_event_id"] and video_url:
             event_update = {"video_url": video_url}
             await update_event(bee_state["current_event_id"], event_update)
@@ -574,7 +587,7 @@ async def upload_video(file: UploadFile = File(...)):
         bee_state["previous_status"] = None
         bee_state["current_event_id"] = None
 
-        return {"status": "success", "message": "Video processed and uploaded successfully", "video_url": video_url}
+        return {"status": "success", "message": "Video processed and saved locally", "video_url": video_url}
     except Exception as e:
         # Make sure to stop external camera in case of exceptions
         if external_camera["is_recording"]:
