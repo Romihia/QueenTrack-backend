@@ -163,8 +163,12 @@ def start_external_camera():
     # For simulation purposes, we'll create a blank video with timestamps
     # In a real implementation, we would capture from the configured camera
     mock_width, mock_height = 640, 480
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_writer = cv2.VideoWriter(output_path, fourcc, 20.0, (mock_width, mock_height))
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(output_path, fourcc, 20.0, (mock_width, mock_height))
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize video writer: {e}")
+        return f"Error: Failed to initialize video writer - {str(e)}"
     
     external_camera["video_writer"] = video_writer
     external_camera["is_recording"] = True
@@ -264,7 +268,7 @@ def mock_recording_thread():
 def process_frame(frame):
     """
     Process frame for bee detection and classification
-    
+
     Returns:
         tuple: (processed_frame, bee_status, current_time) where:
             - processed_frame is the frame with visualizations
@@ -280,8 +284,15 @@ def process_frame(frame):
     # Create a copy of the frame to process and avoid modifying the original
     processed_frame = frame.copy()
 
-    # Step 1: Detect bees using YOLO detection model
-    results_detect = model_detect(processed_frame)
+    try:
+        # Step 1: Detect bees using YOLO detection model
+        results_detect = model_detect(processed_frame)
+    except Exception as e:
+        print(f"[ERROR] YOLO detection failed: {e}")
+        # Return original frame with error overlay
+        cv2.putText(processed_frame, f"Detection Error: {str(e)[:50]}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        return processed_frame, None, current_time
     
     if results_detect and len(results_detect) > 0 and hasattr(results_detect[0], 'boxes'):
         boxes = results_detect[0].boxes.xyxy
