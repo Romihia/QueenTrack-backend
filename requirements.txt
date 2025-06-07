@@ -13,3 +13,4 @@ websockets==11.0.3
 pytest-httpx==0.22.0
 python-multipart==0.0.6
 ultralytics
+psutil==5.9.5
