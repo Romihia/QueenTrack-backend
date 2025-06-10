@@ -2,14 +2,68 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyc
 
-# Env files
-*.env
+# Virtual environments
 venv/
 .venv/
+# env/
+# .env/
+
+# Environment files
+*.env
+.env.local
+.env.production
+.env.development
+
+# Video storage directories
+data/
+temp_videos/
+/data/videos/
+/temp_videos/
+outside_videos/
+uploaded_videos/
+processed_videos/
 
 # Logs
 *.log
+logs/
+/var/log/
+
+# AI Models (large files)
+*.pt
+*.pth
+*.onnx
+yolov8*.pt
+best.pt
 
 # Docker
 *.log
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+*.old

@@ -1,0 +1,69 @@
+version: "3.8"
+services:
+  # Nginx reverse proxy for HTTPS termination
+  nginx:
+    image: nginx:alpine
+    container_name: queentrack_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./data/videos:/var/www/videos:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build: .
+    container_name: queentrack_backend_https
+    expose:
+      - "8000"
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
+      - ENV=production
+      - HTTPS_ENABLED=true
+      - SERVER_HOST=${SERVER_HOST:-localhost}
+    devices:
+      - "/dev/video0:/dev/video0"
+    privileged: true
+    env_file:
+      - .env
+    volumes:
+      - ./data/videos:/data/videos
+      - ./logs:/app/logs
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Let's Encrypt certificate automation
+  certbot:
+    image: certbot/certbot
+    container_name: queentrack_certbot
+    volumes:
+      - ./nginx/ssl:/etc/letsencrypt
+      - ./nginx/ssl-challenge:/var/www/certbot
+    command: certonly --webroot --webroot-path=/var/www/certbot --email ${SSL_EMAIL} --agree-tos --no-eff-email -d ${SERVER_DOMAIN}
+    depends_on:
+      - nginx
+
+volumes:
+  mongo_data:
+    driver: local 
