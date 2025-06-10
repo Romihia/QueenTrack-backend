@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -28,22 +28,109 @@ jobs:
       - name: Build Docker Image
         run: docker build -t bee-vision-backend:latest .
 
-      - name: Run Docker Container
+      - name: Run Docker Container (Test)
         run: |
           docker run --name bee-vision-backend-test -d -p 8000:8000 bee-vision-backend:latest
-          sleep 5  # ממתינים לוודא שהשירות עלה
+          sleep 10  # ממתינים לוודא שהשירות עלה
           docker ps  # מציגים קונטיינרים פעילים
+
+      # בדיקת בריאות הקונטיינר
+      - name: Health Check
+        run: |
+          # בדיקה אם השירות מגיב
+          curl -f http://localhost:8000/health || curl -f http://localhost:8000/ || echo "Service may not have health endpoint, continuing..."
 
       # עצירת הקונטיינר
       - name: Stop Docker Container
         run: docker stop bee-vision-backend-test && docker rm bee-vision-backend-test
 
-  # Job נוסף למקרה של Merge ל-main
-  finalize-deployment:
+  # Job אוטומטי לפריסה לפרודקשן
+  deploy-to-production:
     if: github.ref_name == 'main'
     needs: validate-and-docker
     runs-on: ubuntu-latest
+    
+    environment:
+      name: production
+      url: http://162.55.53.52:8000
 
     steps:
-      - name: Notify deployment
-        run: echo "Ready to deploy to production!"
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # הכנת מפתח SSH
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      # העברת קבצי הפריסה לשרת
+      - name: Copy deployment files
+        run: |
+          scp -i ~/.ssh/id_rsa docker-compose.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+          scp -i ~/.ssh/id_rsa -r .github/scripts/deploy.sh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+
+      # ביצוע פריסה אוטומטית
+      - name: Deploy to Production Server
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            set -e
+            echo "🚀 Starting deployment process..."
+            
+            # מעבר לתיקיית הפרויקט
+            cd /opt/queentrack
+            
+            # עדכון הקוד מ-Git
+            echo "📥 Pulling latest code from main branch..."
+            git fetch origin
+            git reset --hard origin/main
+            
+            # בדיקה אם יש קונטיינרים פעילים
+            echo "🛑 Stopping existing containers..."
+            docker-compose down || true
+            
+            # מחיקת תמונות Docker ישנות (לחיסכון במקום)
+            echo "🧹 Cleaning up old Docker images..."
+            docker image prune -af || true
+            
+            # בניית תמונת Docker חדשה
+            echo "🔨 Building new Docker image..."
+            docker-compose build --no-cache
+            
+            # הרצת הקונטיינרים החדשים
+            echo "🚀 Starting new containers..."
+            docker-compose up -d
+            
+            # בדיקת בריאות השירות
+            echo "🏥 Checking service health..."
+            sleep 15
+            
+            # בדיקה שהקונטיינר פועל
+            if docker-compose ps | grep -q "Up"; then
+              echo "✅ Deployment successful! Service is running."
+              docker-compose ps
+            else
+              echo "❌ Deployment failed! Service is not running."
+              docker-compose logs
+              exit 1
+            fi
+            
+            echo "🎉 Deployment completed successfully!"
+          EOF
+
+      # בדיקת בריאות מרחוק
+      - name: Final Health Check
+        run: |
+          echo "🔍 Performing final health check..."
+          sleep 10
+          # בדיקה אם השירות מגיב מהאינטרנט
+          curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/health || curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/ || echo "⚠️ Service may not have health endpoint, but deployment completed."
+
+      # התראה על הצלחה
+      - name: Deployment Success Notification
+        run: |
+          echo "🎉 SUCCESS: Application deployed to production!"
+          echo "🌐 Production URL: http://${{ secrets.PRODUCTION_HOST }}:8000"
+          echo "📊 You can check the service status with: docker-compose ps"

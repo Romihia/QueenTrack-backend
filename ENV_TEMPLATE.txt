@@ -1,0 +1,75 @@
+# QueenTrack Backend Environment Configuration Template
+# Copy this file to .env and update with your values
+
+# =============================================================================
+# REQUIRED VARIABLES
+# =============================================================================
+
+# Database Configuration
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=queentrack_db
+
+# Application Environment
+ENV=development
+
+# =============================================================================
+# PRODUCTION VARIABLES (Required for production deployment)
+# =============================================================================
+
+# Server Configuration  
+SERVER_HOST=162.55.53.52
+SERVER_PORT=8000
+
+# SSL/HTTPS Configuration (for HTTPS setup)
+# SERVER_DOMAIN=yourdomain.com
+# SSL_EMAIL=admin@yourdomain.com
+
+# =============================================================================
+# OPTIONAL VARIABLES
+# =============================================================================
+
+# Camera Configuration
+# DEFAULT_INTERNAL_CAMERA=0
+# DEFAULT_EXTERNAL_CAMERA=1
+
+# Video Storage Configuration
+# VIDEOS_RETENTION_DAYS=30
+# MAX_VIDEO_SIZE_MB=100
+
+# AI Model Configuration
+# YOLO_DETECTION_MODEL=yolov8n.pt
+# YOLO_CLASSIFICATION_MODEL=best.pt
+# DETECTION_CONFIDENCE=0.7
+
+# Performance Tuning
+# UVICORN_WORKERS=2
+# MAX_CONNECTIONS=1000
+
+# MongoDB Authentication (if required)
+# MONGO_USERNAME=your_mongo_user
+# MONGO_PASSWORD=your_mongo_password
+
+# Security (for production)
+# SECRET_KEY=your-secret-key-here
+# CORS_ORIGINS=https://yourdomain.com
+
+# Monitoring & Logging
+# LOG_LEVEL=INFO
+# SENTRY_DSN=https://your-sentry-dsn
+
+# External Services
+# TELEGRAM_BOT_TOKEN=your-telegram-token
+# TELEGRAM_CHAT_ID=your-chat-id
+
+# Backup Configuration
+# BACKUP_ENABLED=true
+# BACKUP_INTERVAL_HOURS=24
+# BACKUP_RETENTION_DAYS=7
+
+# =============================================================================
+# USAGE INSTRUCTIONS
+# =============================================================================
+# 1. Copy this file to .env: cp ENV_TEMPLATE.txt .env
+# 2. Edit .env with your actual values
+# 3. Uncomment variables you want to use (remove # at the beginning)
+# 4. Make sure .env is never committed to git (it's in .gitignore) 
