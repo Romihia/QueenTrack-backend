@@ -11,8 +11,12 @@ from datetime import datetime
 
 class EventBase(BaseModel):
     time_out: datetime
-    time_in: datetime
-    video_url: Optional[str] = None
+    time_in: Optional[datetime] = None
+    internal_video_url: Optional[str] = None  # וידאו מהמצלמה הפנימית
+    external_video_url: Optional[str] = None  # וידאו מהמצלמה החיצונית
+    
+    # Backward compatibility 
+    video_url: Optional[str] = None  # שדה ישן לתאימות אחורית
 
 class EventCreate(EventBase):
     """סכמה ליצירת אירוע חדש (כוללת time_out, time_in, video_url)"""
@@ -20,9 +24,11 @@ class EventCreate(EventBase):
 
 class EventUpdate(BaseModel):
     """סכמה לעדכון אירוע (כל השדות אופציונליים)"""
-    time_out: Optional[datetime]
-    time_in: Optional[datetime]
-    video_url: Optional[str]
+    time_out: Optional[datetime] = None
+    time_in: Optional[datetime] = None
+    internal_video_url: Optional[str] = None
+    external_video_url: Optional[str] = None
+    video_url: Optional[str] = None  # שדה ישן לתאימות אחורית
 
 class EventDB(EventBase):
     """סכמה שמייצגת את האירוע כפי שנשמר/מוחזר מה-DB"""
@@ -31,3 +37,4 @@ class EventDB(EventBase):
     class Config:
         allow_population_by_field_name = True
         # כדי לתמוך בהמרת _id -> id
+        from_attributes = True

@@ -1,289 +1,267 @@
-# 🚀 QueenTrack Backend - Quick Start Guide
+# 🚀 Queen Track v2.0 - Quick Start Guide
 
-## ✅ All Issues Resolved!
+## ⚡ **Immediate Fix Applied**
 
-This document summarizes the solutions implemented for your 4 requested tasks:
+The logging directory issue has been resolved! The system now:
 
----
-
-## 1️⃣ ✅ Video Access Through Server
-
-**Problem:** Need browser access to recorded videos  
-**Solution:** Enhanced video serving with multiple access methods
-
-### 🎬 Video Access Methods
-
-#### Direct Video URLs
-```
-http://162.55.53.52:8000/videos/outside_videos/video_1234567890.mp4
-http://162.55.53.52:8000/videos/processed_videos/processed_upload.mp4
-http://162.55.53.52:8000/videos/uploaded_videos/my_video.mp4
-```
-
-#### Video Listing API
-```bash
-# List all videos
-curl http://162.55.53.52:8000/videos/list
-
-# List videos in specific folder
-curl http://162.55.53.52:8000/videos/list?folder=outside_videos
-
-# List available folders
-curl http://162.55.53.52:8000/videos/folders
-```
-
-### 📁 Video Folder Structure
-```
-/data/videos/
-├── outside_videos/     # External camera recordings
-├── processed_videos/   # AI-processed videos
-├── uploaded_videos/    # User-uploaded videos
-└── temp_videos/        # Temporary processing files
-```
-
-**Features Added:**
-- ✅ Static file serving with FastAPI
-- ✅ Video listing endpoints
-- ✅ Folder browsing API
-- ✅ HTML5 video player support
-- ✅ Range requests for streaming
-- ✅ Multiple video format support
+- ✅ Creates `/data/logs` directory before logging initialization
+- ✅ Has fallback to console-only logging if file logging fails
+- ✅ Shows clear startup messages
 
 ---
 
-## 2️⃣ ✅ HTTP vs HTTPS Solution
+## 🏃‍♂️ **Quick Start Steps**
 
-**Problem:** Browser security warnings with HTTP  
-**Solution:** Complete HTTPS setup with SSL termination
+### 🐳 **Docker Method (Recommended)**
 
-### 🔐 HTTPS Setup Options
-
-#### Option 1: Quick HTTPS Setup
 ```bash
-# 1. Configure SSL variables in .env
-SERVER_DOMAIN=yourdomain.com
-SSL_EMAIL=admin@yourdomain.com
+# 1. Start containers
+./docker_manager.sh start
 
-# 2. Run automated SSL setup
-chmod +x scripts/setup-ssl.sh
-./scripts/setup-ssl.sh
+# 2. Run Docker startup check inside container
+./docker_manager.sh check
 
-# 3. Start HTTPS services
-docker-compose -f docker-compose.https.yml up -d
+# 3. Monitor logs
+./docker_manager.sh logs backend
+
+# 4. Access container shell (if needed)
+./docker_manager.sh shell
 ```
 
-#### Option 2: Development (Self-signed)
+### 💻 **Local Development Method**
+
+### 1. **Restart the Backend** (if needed)
+
 ```bash
-# For development/testing with self-signed certificates
-./scripts/setup-ssl.sh
-# Choose option 2 for self-signed certificates
+# If the backend crashed, restart it:
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-#### Option 3: Production (Let's Encrypt)
+### 2. **Run Startup Check** (Recommended)
+
 ```bash
-# For production with trusted certificates
-./scripts/setup-ssl.sh
-# Choose option 1 for Let's Encrypt
+# Run the automated system check:
+python3 startup_check.py
 ```
 
-**Features Added:**
-- ✅ Nginx reverse proxy with SSL termination
-- ✅ Let's Encrypt integration
-- ✅ Automatic HTTP to HTTPS redirect
-- ✅ Security headers (HSTS, CSP, etc.)
-- ✅ Certificate auto-renewal
-- ✅ Rate limiting and DDoS protection
+### 3. **Verify Everything Works**
 
-### 🌐 Access Your Site
-- **HTTP:** `http://yourdomain.com` → Redirects to HTTPS
-- **HTTPS:** `https://yourdomain.com` ✅ Secure access
-- **Videos:** `https://yourdomain.com/videos/` ✅ Secure video access
-
----
-
-## 3️⃣ ✅ Updated README with .env Documentation
-
-**Problem:** Missing .env documentation  
-**Solution:** Comprehensive documentation and template
-
-### 📄 Documentation Created
-
-#### 1. Updated README.md
-- ✅ Complete `.env` variable documentation
-- ✅ Environment-specific examples
-- ✅ Step-by-step setup instructions
-- ✅ Troubleshooting guide
-- ✅ API documentation
-
-#### 2. ENV_TEMPLATE.txt
 ```bash
-# Copy template to create .env file
-cp ENV_TEMPLATE.txt .env
-# Edit with your values
-```
-
-### 🔑 Required Environment Variables
-
-#### Basic Setup
-```bash
-MONGO_URI=mongodb://localhost:27017
-MONGO_DB_NAME=queentrack_db
-ENV=development
-```
-
-#### Production Setup
-```bash
-SERVER_HOST=162.55.53.52
-SERVER_DOMAIN=yourdomain.com
-SSL_EMAIL=admin@yourdomain.com
-ENV=production
-```
-
-**Complete documentation available in:**
-- 📖 `README.md` - Full documentation
-- 📋 `ENV_TEMPLATE.txt` - Copy-paste template
-
----
-
-## 4️⃣ ✅ Local Testing with Docker Compose
-
-**Problem:** How to run tests locally while using Docker  
-**Solution:** Comprehensive testing guide and methods
-
-### 🧪 Testing Methods
-
-#### Method 1: Custom Test Runner (Recommended)
-```bash
-# Install dependencies locally
-pip install -r requirements.txt
-
-# Start Docker services
-docker-compose up -d
-
-# Run all tests
-python run_tests.py
-
-# Run specific categories
-python run_tests.py --category api
-python run_tests.py --category video
-python run_tests.py --category performance
-```
-
-#### Method 2: Direct pytest
-```bash
-# Run all tests
-pytest -v
-
-# Run specific test files
-pytest tests/test_api_routes.py -v
-pytest tests/test_video_processing.py -v
-
-# Run with coverage
-pytest --cov=app --cov-report=html
-```
-
-#### Method 3: Docker + Local Hybrid
-```bash
-# Services in Docker, tests local
-docker-compose up -d
-sleep 5
-pytest tests/ -v
-
-# Everything in Docker
-docker-compose exec backend python -m pytest tests/ -v
-```
-
-### 📊 Test Coverage: 75+ Tests
-- 🗃️ **Database Tests (15):** CRUD operations, validation
-- 🌐 **API Tests (20):** All endpoints, WebSocket, errors
-- 🎥 **Video Tests (25):** YOLO, processing, cameras
-- ⚡ **Performance Tests (15):** Load, memory, benchmarks
-
-**Complete testing guide available in:**
-- 📖 `TESTING_GUIDE.md` - Detailed testing instructions
-
----
-
-## 🎉 Quick Start Commands
-
-### For Development
-```bash
-# 1. Setup environment
-cp ENV_TEMPLATE.txt .env
-# Edit .env with your values
-
-# 2. Start services
-docker-compose up -d
-
-# 3. Test everything works
-curl http://localhost:8000/health
-curl http://localhost:8000/videos/list
-
-# 4. Run tests
-python run_tests.py
-```
-
-### For Production
-```bash
-# 1. Setup environment for production
-cp ENV_TEMPLATE.txt .env
-# Edit .env with production values
-
-# 2. Setup HTTPS (optional but recommended)
-./scripts/setup-ssl.sh
-
-# 3. Start production services
-docker-compose -f docker-compose.prod.yml up -d
-# OR for HTTPS:
-docker-compose -f docker-compose.https.yml up -d
-
-# 4. Verify deployment
-curl https://yourdomain.com/health
-curl https://yourdomain.com/videos/list
+# Test the main endpoints:
+curl http://localhost:8000/                    # Root endpoint
+curl http://localhost:8000/system/health       # System health
+curl -X POST http://localhost:8000/video/test-email  # Email test
 ```
 
 ---
 
-## 📋 Files Created/Modified
+## 🐛 **If You Still See Errors**
 
-### New Files
-- ✅ `README.md` - Complete project documentation
-- ✅ `TESTING_GUIDE.md` - Comprehensive testing guide  
-- ✅ `ENV_TEMPLATE.txt` - Environment template
-- ✅ `docker-compose.https.yml` - HTTPS production config
-- ✅ `nginx/nginx.conf` - Nginx SSL configuration
-- ✅ `scripts/setup-ssl.sh` - SSL setup automation
-- ✅ `QUICK_START.md` - This summary guide
+### **Permission Issues:**
 
-### Enhanced Files
-- ✅ `app/main.py` - Added video listing endpoints
-- ✅ `.gitignore` - Enhanced video exclusions
+```bash
+# Fix permissions for data directory:
+sudo chmod -R 755 /data/
+sudo chown -R $USER:$USER /data/
+
+# Or create in home directory instead:
+mkdir -p ~/queen-track-data/{logs,videos}
+# Then update paths in code to use ~/queen-track-data/
+```
+
+### **Docker Environment:**
+
+```bash
+# For Docker issues, use the Docker manager:
+./docker_manager.sh restart        # Restart containers
+./docker_manager.sh clean          # Clean restart (removes data)
+./docker_manager.sh logs backend   # Check logs
+./docker_manager.sh health         # Quick health check
+
+# Manual Docker commands:
+docker-compose down
+docker-compose up -d --build
+docker-compose logs -f backend
+```
+
+### **Alternative Logging Setup:**
+
+If file logging still fails, you can disable it temporarily:
+
+```python
+# In app/main.py, replace the logging setup with:
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]  # Console only
+)
+```
 
 ---
 
-## 🔗 Useful Links
+## ✅ **Expected Startup Messages**
 
-- **Health Check:** `http://localhost:8000/health`
-- **API Docs:** `http://localhost:8000/docs`
-- **Videos List:** `http://localhost:8000/videos/list`
-- **Video Folders:** `http://localhost:8000/videos/folders`
+### 🐳 **Docker Messages:**
+
+```
+Creating network "queentrack-backend_default" with the default driver
+Creating bee_backend ... done
+✅ Containers started
+ℹ️  Waiting for containers to initialize...
+```
+
+### 💻 **Application Messages:**
+
+You should see:
+
+```
+INFO: Uvicorn running on http://0.0.0.0:8000
+INFO:app.services.email_service:Email service initialized. Sending from: your@email.com
+INFO:app.services.video_service:Video service initialized. Base directory: /data/videos
+INFO:app.main:🚀 Queen Track Backend v2.0 initializing...
+INFO:app.main:✅ All routers loaded successfully
+INFO:app.main:📧 Email service ready
+INFO:app.main:🎥 Video service ready
+INFO:app.main:🔍 System monitoring ready
+INFO:app.main:🐝 Queen Track Backend v2.0 ready to serve!
+```
 
 ---
 
-## 🆘 Need Help?
+## 🧪 **Quick Test Commands**
 
-1. **Check logs:** `docker-compose logs -f backend`
-2. **Run tests:** `python run_tests.py`
-3. **Read docs:** `README.md` and `TESTING_GUIDE.md`
-4. **Test API:** Visit `http://localhost:8000/docs`
+```bash
+# 1. System health
+curl http://localhost:8000/system/health
+
+# 2. Email test (will send actual email if configured)
+curl -X POST http://localhost:8000/video/test-email
+
+# 3. Video list
+curl http://localhost:8000/video/videos-list
+
+# 4. Camera status
+curl http://localhost:8000/video/external-camera-status
+
+# 5. Complete system test
+curl -X POST http://localhost:8000/system/test-full-system
+```
 
 ---
 
-## ✨ All Tasks Complete!
+## 📁 **Frontend Setup**
 
-✅ **Video Access** - Direct URLs and API  
-✅ **HTTPS Support** - SSL termination with Nginx  
-✅ **README Updated** - Complete .env documentation  
-✅ **Local Testing** - Multiple testing methods  
+1. **Add Sample Video:**
 
-Your QueenTrack backend is now production-ready with comprehensive video access, HTTPS security, detailed documentation, and robust testing! 🐝🚀 
+   ```bash
+   # Place your test video in the frontend:
+   cp your-bee-video.mp4 queen-track-frontend/public/sample-videos/sample-hive-video.mp4
+   ```
+
+2. **Start Frontend:**
+
+   ```bash
+   cd queen-track-frontend
+   npm start
+   # Opens on http://localhost:3000
+   ```
+
+3. **Test the System:**
+   - Select "שידור קובץ וידאו לדוגמה" (Sample Video Broadcasting)
+   - Click "התחל שידור וידאו" (Start Video Broadcasting)
+   - Watch for bee detection and email notifications
+
+---
+
+## 🔧 **Environment Variables Check**
+
+Make sure your `.env` file has:
+
+```env
+EMAIL_USER=your_gmail@gmail.com
+EMAIL_PASS=your_app_password_not_regular_password
+SEND_EMAIL=recipient@email.com
+
+# Other existing variables...
+MONGO_URI=mongodb+srv://...
+AWS_ACCESS_KEY_ID=...
+# etc.
+```
+
+---
+
+## 📧 **Email Configuration**
+
+For Gmail (most common):
+
+1. **Enable 2-factor authentication**
+2. **Generate app password:** Google Account → Security → App passwords
+3. **Use app password** (not your regular password) in `EMAIL_PASS`
+
+---
+
+## 🆘 **Still Having Issues?**
+
+### **Check Logs:**
+
+```bash
+# Backend logs
+tail -f /data/logs/queen_track.log
+
+# Or if file logging failed, check console output
+```
+
+### **Check Process:**
+
+```bash
+# See if backend is running
+ps aux | grep uvicorn
+
+# Check port usage
+netstat -tulpn | grep :8000
+```
+
+### **Reset Everything:**
+
+```bash
+# Clean restart
+pkill -f uvicorn
+rm -rf /data/logs/* /data/videos/*
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## 🎯 **Success Indicators**
+
+✅ **Backend starts without errors**  
+✅ **All API endpoints respond**  
+✅ **Email test works**  
+✅ **Video streaming starts**  
+✅ **System health shows all green**
+
+When all these work → **You're ready to monitor bees!** 🐝
+
+---
+
+## 🐳 **Docker Quick Reference**
+
+```bash
+# Essential Docker commands:
+./docker_manager.sh start          # Start everything
+./docker_manager.sh check          # Run full system check
+./docker_manager.sh logs backend   # Monitor backend logs
+./docker_manager.sh shell          # Enter container shell
+./docker_manager.sh stop           # Stop everything
+./docker_manager.sh help           # See all commands
+
+# Direct Docker commands:
+docker-compose ps                   # See container status
+docker-compose exec backend python3 docker_startup_check.py
+docker-compose logs -f backend      # Follow logs
+docker stats                        # See resource usage
+```
+
+---
+
+**Need help?** Check the full documentation in `SYSTEM_UPGRADE_README.md`
