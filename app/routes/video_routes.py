@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from ultralytics import YOLO
 from datetime import datetime
 from app.services.service import create_event, update_event, get_all_events
+from app.schemas.schema import EventCreate, EventUpdate
 from app.services.email_service import email_service
 from app.services.video_service import video_service
 import threading
@@ -353,12 +354,12 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         logger.warning(f"🚪 [{current_time}] EVENT STARTED: Bee exited after entering")
         
         try:
-            event_data = {
-                "time_out": current_time,
-                "time_in": None,
-                "internal_video_url": None,
-                "external_video_url": None
-            }
+            event_data = EventCreate(
+                time_out=current_time,
+                time_in=None,
+                internal_video_url=None,
+                external_video_url=None
+            )
             new_event = await create_event(event_data)
             bee_state["current_event_id"] = new_event.id
             logger.info(f"📝 Created new event with ID: {new_event.id}")
@@ -397,9 +398,9 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         try:
             current_event_id = bee_state["current_event_id"]
             if current_event_id:
-                event_update = {
-                    "time_in": current_time
-                }
+                event_update = EventUpdate(
+                    time_in=current_time
+                )
                 await update_event(current_event_id, event_update)
                 logger.info(f"📝 Updated event {current_event_id} with end time")
                 bee_state["current_event_id"] = None
@@ -549,7 +550,7 @@ async def live_stream(websocket: WebSocket):
             if current_event_id:
                 video_url = video_service.save_video_locally(processed_filename)
                 if video_url:
-                    event_update = {"video_url": video_url}
+                    event_update = EventUpdate(video_url=video_url)
                     await update_event(current_event_id, event_update)
 
 @router.post("/debug/set-initial-status")
