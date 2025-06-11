@@ -55,23 +55,24 @@ bee_state = {
 }
 
 # Configuration constants
-HIVE_ENTRANCE_ROI = [400, 0, 600, 700]
+FRAME_WIDTH = 640  # Default frame width
+FRAME_HEIGHT = 480  # Default frame height
+CENTER_LINE_X = FRAME_WIDTH // 2  # Vertical center line
 MIN_CONSECUTIVE_DETECTIONS = 3
-SEQUENCE_PATTERN = ["outside", "inside", "outside"]
 POSITION_HISTORY_SIZE = 1000  # Keep 1000 points instead of 50
 
-def is_inside_roi(x_center, y_center):
-    """Check if point is inside ROI"""
-    x_min, y_min, x_max, y_max = HIVE_ENTRANCE_ROI
-    return (x_min <= x_center <= x_max) and (y_min <= y_center <= y_max)
+def is_inside_hive(x_center, y_center):
+    """Check if point is on the inside (right) side of the hive
+    Right side = inside hive, Left side = outside hive"""
+    return x_center > CENTER_LINE_X
 
 def detect_sequence_pattern(x_center, y_center, current_time):
     """
-    Detect sequence pattern for event triggering
+    Detect crossing events for triggering
     Returns: (bee_status, event_action)
     """
     # Determine current raw status
-    is_currently_inside = is_inside_roi(x_center, y_center)
+    is_currently_inside = is_inside_hive(x_center, y_center)
     current_status = "inside" if is_currently_inside else "outside"
     
     # Update consecutive detection counters
@@ -98,6 +99,7 @@ def detect_sequence_pattern(x_center, y_center, current_time):
     if confirmed_status:
         # Update sequence only when we have a confirmed status change
         if bee_state["current_status"] != confirmed_status:
+            previous_status = bee_state["current_status"]
             bee_state["current_status"] = confirmed_status
             bee_state["status_sequence"].append(confirmed_status)
             
@@ -105,39 +107,23 @@ def detect_sequence_pattern(x_center, y_center, current_time):
             if len(bee_state["status_sequence"]) > 10:
                 bee_state["status_sequence"] = bee_state["status_sequence"][-10:]
             
-            logger.info(f"Status confirmed: {confirmed_status}")
+            logger.info(f"Status change: {previous_status} → {confirmed_status}")
             logger.info(f"Full sequence: {' → '.join(bee_state['status_sequence'])}")
             logger.info(f"Event active: {bee_state['event_active']}")
             
-            # Check for pattern matching
-            if not bee_state["event_active"]:
-                # Looking for event start pattern: outside → inside → outside
-                if len(bee_state["status_sequence"]) >= 3:
-                    last_three = bee_state["status_sequence"][-3:]
-                    
-                    if last_three == SEQUENCE_PATTERN:
-                        # Event start detected!
+            # Check for crossing events
+            if previous_status and previous_status != confirmed_status:
+                if not bee_state["event_active"]:
+                    # Check for event start: inside → outside (bee exits hive)
+                    if previous_status == "inside" and confirmed_status == "outside":
                         bee_state["event_active"] = True
-                        logger.warning("🚪 EVENT PATTERN DETECTED: outside → inside → outside")
-                        
-                        # Reset sequence after trigger - start fresh tracking for event end
-                        bee_state["status_sequence"] = [confirmed_status]
-                        logger.info(f"🔄 Sequence reset after event start. New sequence: [{confirmed_status}]")
-                        
+                        logger.warning("🚪 EVENT START: Bee crossed from inside → outside")
                         return confirmed_status, "start_event"
-            else:
-                # Event is active - looking for end pattern: outside → inside
-                if len(bee_state["status_sequence"]) >= 2:
-                    last_two = bee_state["status_sequence"][-2:]
-                    if last_two == ["outside", "inside"]:
-                        # Event end: bee returned to hive
+                else:
+                    # Check for event end: outside → inside (bee returns to hive)
+                    if previous_status == "outside" and confirmed_status == "inside":
                         bee_state["event_active"] = False
-                        logger.warning("🏠 EVENT END PATTERN: outside → inside (bee returned)")
-                        
-                        # Reset sequence after event end
-                        bee_state["status_sequence"] = [confirmed_status]
-                        logger.info(f"🔄 Sequence reset after event end. New sequence: [{confirmed_status}]")
-                        
+                        logger.warning("🏠 EVENT END: Bee crossed from outside → inside")
                         return confirmed_status, "end_event"
     
     return bee_state.get("current_status"), None
@@ -150,32 +136,33 @@ def format_time(milliseconds):
     seconds = (total_seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
 
-def draw_roi_info(frame, roi=None):
-    """Draw ROI information including buffer zones and center line"""
-    if roi is None:
-        roi = HIVE_ENTRANCE_ROI
-        
-    x_min, y_min, x_max, y_max = roi
+def draw_center_line_info(frame):
+    """Draw vertical center line separating inside/outside areas"""
+    height, width = frame.shape[:2]
     
-    # Calculate buffer zones
-    buffer_x = int((x_max - x_min) * 0.1)
+    # Update global frame dimensions
+    global FRAME_WIDTH, FRAME_HEIGHT, CENTER_LINE_X
+    FRAME_WIDTH = width
+    FRAME_HEIGHT = height  
+    CENTER_LINE_X = width // 2
     
-    # Draw main ROI
-    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+    # Draw main center line (bright yellow)
+    cv2.line(frame, (CENTER_LINE_X, 0), (CENTER_LINE_X, height), (0, 255, 255), 3)
     
-    # Draw buffer zones
-    cv2.rectangle(frame, (x_min - buffer_x, y_min), (x_min + buffer_x, y_max), (128, 128, 255), 1)
-    cv2.rectangle(frame, (x_max - buffer_x, y_min), (x_max + buffer_x, y_max), (128, 128, 255), 1)
+    # Draw buffer zones (thin lines)
+    buffer_width = 20
+    cv2.line(frame, (CENTER_LINE_X - buffer_width, 0), (CENTER_LINE_X - buffer_width, height), (128, 128, 255), 1)
+    cv2.line(frame, (CENTER_LINE_X + buffer_width, 0), (CENTER_LINE_X + buffer_width, height), (128, 128, 255), 1)
     
-    # Draw center line
-    center_x = (x_min + x_max) // 2
-    cv2.line(frame, (center_x, y_min), (center_x, y_max), (255, 255, 255), 1)
+    # Add area labels
+    cv2.putText(frame, "OUTSIDE", (50, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 165, 0), 2)
+    cv2.putText(frame, "INSIDE HIVE", (CENTER_LINE_X + 50, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
     
-    # Add labels
-    cv2.putText(frame, "Buffer Zone", (x_min - buffer_x, y_min - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 255), 1)
-    cv2.putText(frame, "Entrance Line", (center_x - 40, y_min - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    # Add center line label
+    cv2.putText(frame, "HIVE ENTRANCE", (CENTER_LINE_X - 80, height - 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
     
     return frame
 
@@ -191,8 +178,8 @@ def draw_bee_path(frame):
         prev_x, prev_y, prev_time, prev_status = position_history[i-1]
         curr_x, curr_y, curr_time, curr_status = position_history[i]
         
-        # Color based on current status: Green for inside, Blue for outside
-        color = (0, 255, 0) if curr_status == "inside" else (255, 0, 0)  # Green inside, Blue outside
+        # Color based on current status: Green for inside, Orange for outside
+        color = (0, 255, 0) if curr_status == "inside" else (0, 165, 255)  # Green inside, Orange outside
         
         # Draw line between consecutive points
         cv2.line(frame, (int(prev_x), int(prev_y)), (int(curr_x), int(curr_y)), color, 2)
@@ -203,7 +190,7 @@ def draw_bee_path(frame):
     # Draw larger circle at the most recent position
     if position_history:
         last_x, last_y, _, last_status = position_history[-1]
-        color = (0, 255, 0) if last_status == "inside" else (255, 0, 0)  # Green inside, Blue outside
+        color = (0, 255, 0) if last_status == "inside" else (0, 165, 255)  # Green inside, Orange outside
         cv2.circle(frame, (int(last_x), int(last_y)), 8, color, 2)
         
         # Add status text near the bee
@@ -231,8 +218,8 @@ def process_frame(frame):
     bee_status = None
     event_action = None
     
-    # Always draw ROI information and bee path
-    processed_frame = draw_roi_info(processed_frame)
+    # Always draw center line and bee path
+    processed_frame = draw_center_line_info(processed_frame)
     processed_frame = draw_bee_path(processed_frame)
     
     if results_detect and len(results_detect) > 0 and hasattr(results_detect[0], 'boxes'):
@@ -276,14 +263,14 @@ def process_frame(frame):
                         bee_status, event_action = detect_sequence_pattern(x_center, y_center, current_time)
                         
                         # Add to position history
-                        raw_status = "inside" if is_inside_roi(x_center, y_center) else "outside"
+                        raw_status = "inside" if is_inside_hive(x_center, y_center) else "outside"
                         timestamp = current_time.timestamp()
                         bee_state["position_history"].append((x_center, y_center, timestamp, raw_status))
                         if len(bee_state["position_history"]) > POSITION_HISTORY_SIZE:
                             bee_state["position_history"] = bee_state["position_history"][-POSITION_HISTORY_SIZE:]
                         
                         logger.info(f"Bee position: ({x_center}, {y_center}), Status: {bee_status}, Raw: {raw_status}, Event: {event_action}")
-                        logger.info(f"ROI check: inside={is_inside_roi(x_center, y_center)}, ROI={HIVE_ENTRANCE_ROI}")
+                        logger.info(f"Center line check: inside={is_inside_hive(x_center, y_center)}, Center_X={CENTER_LINE_X}")
                         logger.info(f"Consecutive counts: inside={consecutive_inside}, outside={consecutive_outside}")
                         logger.info(f"Sequence: {' → '.join(bee_state['status_sequence'][-5:]) if bee_state['status_sequence'] else 'Empty'}")
                         
@@ -382,11 +369,11 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         # Send email notification
         try:
             additional_info = {
-                "roi_coordinates": HIVE_ENTRANCE_ROI,
+                "center_line_x": CENTER_LINE_X,
                 "event_type": "event_start",
-                "sequence": bee_state["status_sequence"][-3:],
+                "crossing_direction": "inside_to_outside",
                 "detection_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "sequence_description": "Bee entered and immediately exited the hive"
+                "sequence_description": "Bee crossed from inside hive to outside area"
             }
             
             email_success = email_service.send_bee_detection_notification(
@@ -452,16 +439,17 @@ async def get_bee_tracking_debug_status():
         "current_event_id": bee_state["current_event_id"],
         "position_history_count": len(bee_state["position_history"]),
         "configuration": {
-            "roi": HIVE_ENTRANCE_ROI,
-            "min_consecutive_detections": MIN_CONSECUTIVE_DETECTIONS,
-            "sequence_pattern": SEQUENCE_PATTERN
+            "center_line_x": CENTER_LINE_X,
+            "frame_width": FRAME_WIDTH,
+            "frame_height": FRAME_HEIGHT,
+            "min_consecutive_detections": MIN_CONSECUTIVE_DETECTIONS
         },
         "camera_config": camera_config,
         "debug_info": {
-            "last_3_statuses": bee_state["status_sequence"][-3:] if len(bee_state["status_sequence"]) >= 3 else bee_state["status_sequence"],
+            "last_statuses": bee_state["status_sequence"][-5:] if bee_state["status_sequence"] else [],
             "full_sequence": bee_state["status_sequence"],
-            "looking_for_pattern": SEQUENCE_PATTERN if not bee_state["event_active"] else ["outside", "inside"],
-            "pattern_description": "Event start pattern" if not bee_state["event_active"] else "Event end pattern"
+            "looking_for_crossing": "inside → outside" if not bee_state["event_active"] else "outside → inside",
+            "crossing_description": "Waiting for bee to exit hive" if not bee_state["event_active"] else "Waiting for bee to return to hive"
         }
     }
 
@@ -480,7 +468,8 @@ async def get_model_info():
             "detection_model": {
                 "model_file": "yolov8n.pt"
             },
-            "current_roi": HIVE_ENTRANCE_ROI,
+            "center_line_x": CENTER_LINE_X,
+            "frame_dimensions": f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
             "detection_threshold": 0.5,
             "position_history_size": POSITION_HISTORY_SIZE
         }
