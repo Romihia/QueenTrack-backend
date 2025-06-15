@@ -75,19 +75,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Pre-deployment validation
-      - name: Validate deployment files
+      # Create production environment file from secrets
+      - name: Create production environment file
         run: |
-          echo "🔍 Validating deployment files..."
+          echo "🔍 Creating .env.production from GitHub secrets..."
 
-          # Check for required files
-          if [ ! -f ".env.production" ]; then
-            echo "❌ ERROR: .env.production file not found!"
-            echo "📁 Available files:"
-            ls -la | grep -E "\.(env|production|yml)" || echo "No relevant files found"
+          # Create .env.production from secret
+          if [ -n "${{ secrets.PRODUCTION_ENV_FILE }}" ]; then
+            echo "${{ secrets.PRODUCTION_ENV_FILE }}" > .env.production
+            echo "✅ .env.production created successfully"
+            echo "📋 Environment file size: $(wc -l < .env.production) lines"
+          else
+            echo "❌ ERROR: PRODUCTION_ENV_FILE secret not found!"
+            echo "Please add the PRODUCTION_ENV_FILE secret to GitHub repository settings"
             exit 1
           fi
 
+          # Validate docker-compose file
           if [ ! -f "docker-compose.prod.yml" ]; then
             echo "⚠️ WARNING: docker-compose.prod.yml not found, will use docker-compose.yml"
           fi
@@ -105,18 +109,18 @@ jobs:
       # יצירת תיקיית הפרויקט בשרת
       - name: Create project directory
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "mkdir -p /opt/queentrack"
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "mkdir -p /QueenTrack-backend"
 
       # העברת קבצי הפריסה לשרת
       - name: Copy deployment files to server
         run: |
           # Copy all necessary files
-          scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/ || true
+          scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/QueenTrack-backend/ || true
 
           # Ensure .env.production is copied (critical for deployment)
           if [ -f ".env.production" ]; then
             echo "📄 Copying .env.production to server..."
-            scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/QueenTrack-backend/
             echo "✅ .env.production copied successfully"
           else
             echo "❌ ERROR: .env.production file not found locally!"
@@ -126,7 +130,7 @@ jobs:
           # Copy docker-compose.prod.yml
           if [ -f "docker-compose.prod.yml" ]; then
             echo "📄 Copying docker-compose.prod.yml to server..."
-            scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/QueenTrack-backend/
             echo "✅ docker-compose.prod.yml copied successfully"
           else
             echo "⚠️ Warning: docker-compose.prod.yml not found"
@@ -134,7 +138,7 @@ jobs:
 
           # Verify files were copied
           echo "🔍 Verifying files on server..."
-          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "ls -la /opt/queentrack/.env* || echo 'No .env files found'"
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "ls -la /QueenTrack-backend/.env* || echo 'No .env files found'"
 
       # ביצוע פריסה אוטומטית
       - name: Deploy to Production Server
@@ -146,7 +150,7 @@ jobs:
             echo "🚀 Starting QueenTrack deployment process..."
             
             # Navigate to project directory
-            cd /opt/queentrack
+            cd /QueenTrack-backend
             
             # Setup Git if not already done
             if [ ! -d ".git" ]; then
