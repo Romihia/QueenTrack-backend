@@ -137,10 +137,10 @@ jobs:
             # Stop existing containers
             echo "🛑 Stopping existing containers..."
             if [ -f "docker-compose.prod.yml" ]; then
-              docker-compose -f docker-compose.prod.yml down || true
+              docker compose -f docker-compose.prod.yml down || true
             else
               echo "⚠️ docker-compose.prod.yml not found, using docker-compose.yml"
-              docker-compose down || true
+              docker compose down || true
             fi
             
             # Clean up old Docker images
@@ -150,9 +150,9 @@ jobs:
             # Build and start new containers
             echo "🔨 Building and starting new containers..."
             if [ -f "docker-compose.prod.yml" ]; then
-              docker-compose -f docker-compose.prod.yml up --build -d
+              docker compose -f docker-compose.prod.yml up --build -d
             else
-              docker-compose up --build -d
+              docker compose up --build -d
             fi
             
             # Wait for services to start
@@ -166,12 +166,12 @@ jobs:
               COMPOSE_FILE="docker-compose.yml"
             fi
             
-            if docker-compose -f \$COMPOSE_FILE ps | grep -q "Up"; then
+            if docker compose -f \$COMPOSE_FILE ps | grep -q "Up"; then
               echo "✅ Deployment successful! Service is running."
-              docker-compose -f \$COMPOSE_FILE ps
+              docker compose -f \$COMPOSE_FILE ps
             else
               echo "❌ Deployment failed! Service is not running."
-              docker-compose -f \$COMPOSE_FILE logs --tail=50
+              docker compose -f \$COMPOSE_FILE logs --tail=50
               exit 1
             fi
             
@@ -201,8 +201,8 @@ jobs:
         run: |
           echo "🎉 SUCCESS: QueenTrack Backend deployed to production!"
           echo "🌐 Production URL: http://${{ secrets.PRODUCTION_HOST }}:8000"
-          echo "📊 Monitor service with SSH and run: docker-compose ps"
-          echo "📋 View logs with SSH and run: docker-compose logs"
+          echo "📊 Monitor service with SSH and run: docker compose ps"
+          echo "📋 View logs with SSH and run: docker compose logs"
 
       # התראה על כישלון
       - name: Deployment Failure Notification
