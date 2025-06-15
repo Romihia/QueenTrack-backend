@@ -105,8 +105,10 @@ jobs:
 
       # ביצוע פריסה אוטומטית
       - name: Deploy to Production Server
+        env:
+          GITHUB_REPO: ${{ github.repository }}
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << EOF
             set -e
             echo "🚀 Starting QueenTrack deployment process..."
             
@@ -117,7 +119,7 @@ jobs:
             if [ ! -d ".git" ]; then
               echo "📥 Initializing git repository..."
               git init
-              git remote add origin "https://github.com/${{ github.repository }}.git"
+              git remote add origin "https://github.com/${GITHUB_REPO}.git"
             fi
             
             # Pull latest code from main branch
@@ -160,16 +162,16 @@ jobs:
             # Health check
             echo "🏥 Checking service health..."
             COMPOSE_FILE="docker-compose.prod.yml"
-            if [ ! -f "$COMPOSE_FILE" ]; then
+            if [ ! -f "\$COMPOSE_FILE" ]; then
               COMPOSE_FILE="docker-compose.yml"
             fi
             
-            if docker-compose -f $COMPOSE_FILE ps | grep -q "Up"; then
+            if docker-compose -f \$COMPOSE_FILE ps | grep -q "Up"; then
               echo "✅ Deployment successful! Service is running."
-              docker-compose -f $COMPOSE_FILE ps
+              docker-compose -f \$COMPOSE_FILE ps
             else
               echo "❌ Deployment failed! Service is not running."
-              docker-compose -f $COMPOSE_FILE logs --tail=50
+              docker-compose -f \$COMPOSE_FILE logs --tail=50
               exit 1
             fi
             
