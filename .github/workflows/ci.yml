@@ -69,7 +69,7 @@ jobs:
 
     environment:
       name: production
-      url: http://${{ secrets.PRODUCTION_HOST }}:8000
+      url: "http://${{ secrets.PRODUCTION_HOST }}:8000"
 
     steps:
       - name: Checkout code
@@ -117,7 +117,7 @@ jobs:
             if [ ! -d ".git" ]; then
               echo "📥 Initializing git repository..."
               git init
-              git remote add origin https://github.com/${{ github.repository }}.git
+              git remote add origin "https://github.com/${{ github.repository }}.git"
             fi
             
             # Pull latest code from main branch
@@ -184,7 +184,7 @@ jobs:
 
           # בדיקה אם השירות מגיב מהאינטרנט
           for i in {1..5}; do
-            if curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/health 2>/dev/null || curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/ 2>/dev/null; then
+            if curl -f "http://${{ secrets.PRODUCTION_HOST }}:8000/health" 2>/dev/null || curl -f "http://${{ secrets.PRODUCTION_HOST }}:8000/" 2>/dev/null; then
               echo "✅ Final health check passed!"
               break
             else
