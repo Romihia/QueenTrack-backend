@@ -15,7 +15,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data/videos:/data/videos
+      - .:/app
+      - ./data:/data
       - ./logs:/app/logs
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     restart: unless-stopped
@@ -31,24 +32,24 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Optional: MongoDB service for production (uncomment if needed)
-  # mongo:
-  #   image: mongo:5.0
-  #   container_name: queentrack_mongo_prod
-  #   ports:
-  #     - "27017:27017"
-  #   volumes:
-  #     - mongo_data:/data/db
-  #     - ./mongo-backup:/backup
-  #   environment:
-  #     - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME}
-  #     - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
-  #   restart: unless-stopped
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
+# Optional: MongoDB service for production (uncomment if needed)
+# mongo:
+#   image: mongo:5.0
+#   container_name: queentrack_mongo_prod
+#   ports:
+#     - "27017:27017"
+#   volumes:
+#     - mongo_data:/data/db
+#     - ./mongo-backup:/backup
+#   environment:
+#     - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME}
+#     - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+#   restart: unless-stopped
+#   logging:
+#     driver: "json-file"
+#     options:
+#       max-size: "10m"
+#       max-file: "3"
 
 volumes:
   mongo_data:

@@ -26,11 +26,11 @@ jobs:
 
       # בודקים שה-Docker Image נבנה ועובד
       - name: Build Docker Image
-        run: docker build -t bee-vision-backend:latest .
+        run: docker build -t queentrack-backend:latest .
 
       - name: Run Docker Container (Test)
         run: |
-          docker run --name bee-vision-backend-test -d -p 8000:8000 bee-vision-backend:latest
+          docker run --name queentrack-backend-test -d -p 8000:8000 queentrack-backend:latest
           sleep 10  # ממתינים לוודא שהשירות עלה
           docker ps  # מציגים קונטיינרים פעילים
 
@@ -42,17 +42,17 @@ jobs:
 
       # עצירת הקונטיינר
       - name: Stop Docker Container
-        run: docker stop bee-vision-backend-test && docker rm bee-vision-backend-test
+        run: docker stop queentrack-backend-test && docker rm queentrack-backend-test
 
   # Job אוטומטי לפריסה לפרודקשן
   deploy-to-production:
     if: github.ref_name == 'main'
     needs: validate-and-docker
     runs-on: ubuntu-latest
-    
+
     environment:
       name: production
-      url: http://162.55.53.52:8000
+      url: http://${{ secrets.PRODUCTION_HOST }}:8000
 
     steps:
       - name: Checkout code
@@ -67,53 +67,70 @@ jobs:
           ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
 
       # העברת קבצי הפריסה לשרת
-      - name: Copy deployment files
+      - name: Copy deployment files to server
         run: |
-          scp -i ~/.ssh/id_rsa docker-compose.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
-          scp -i ~/.ssh/id_rsa -r .github/scripts/deploy.sh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+          # Copy docker-compose production file
+          scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+
+          # Copy production environment file
+          scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+
+          # Copy deployment script
+          scp -i ~/.ssh/id_rsa .github/scripts/deploy.sh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+
+          # Make deployment script executable
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "chmod +x /opt/queentrack/deploy.sh"
 
       # ביצוע פריסה אוטומטית
       - name: Deploy to Production Server
         run: |
           ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
             set -e
-            echo "🚀 Starting deployment process..."
+            echo "🚀 Starting QueenTrack deployment process..."
             
-            # מעבר לתיקיית הפרויקט
+            # Navigate to project directory
             cd /opt/queentrack
             
-            # עדכון הקוד מ-Git
+            # Update repository URL in deploy script with actual repo
+            sed -i 's|YOUR_USERNAME|${{ github.repository_owner }}|g' deploy.sh
+            
+            # Pull latest code from main branch
             echo "📥 Pulling latest code from main branch..."
-            git fetch origin
+            git fetch origin || git clone https://github.com/${{ github.repository }}.git .
+            git checkout main
             git reset --hard origin/main
             
-            # בדיקה אם יש קונטיינרים פעילים
-            echo "🛑 Stopping existing containers..."
-            docker-compose down || true
+            # Setup production environment
+            echo "⚙️ Setting up production environment..."
+            if [ -f ".env.production" ]; then
+                cp .env.production .env
+                echo "✅ Production environment configured"
+            fi
             
-            # מחיקת תמונות Docker ישנות (לחיסכון במקום)
+            # Stop existing containers
+            echo "🛑 Stopping existing containers..."
+            docker-compose -f docker-compose.prod.yml down || true
+            
+            # Clean up old Docker images
             echo "🧹 Cleaning up old Docker images..."
             docker image prune -af || true
             
-            # בניית תמונת Docker חדשה
-            echo "🔨 Building new Docker image..."
-            docker-compose build --no-cache
+            # Build and start new containers
+            echo "🔨 Building and starting new containers..."
+            docker-compose -f docker-compose.prod.yml up --build -d
             
-            # הרצת הקונטיינרים החדשים
-            echo "🚀 Starting new containers..."
-            docker-compose up -d
+            # Wait for services to start
+            echo "⏳ Waiting for services to start..."
+            sleep 20
             
-            # בדיקת בריאות השירות
+            # Health check
             echo "🏥 Checking service health..."
-            sleep 15
-            
-            # בדיקה שהקונטיינר פועל
-            if docker-compose ps | grep -q "Up"; then
+            if docker-compose -f docker-compose.prod.yml ps | grep -q "Up"; then
               echo "✅ Deployment successful! Service is running."
-              docker-compose ps
+              docker-compose -f docker-compose.prod.yml ps
             else
               echo "❌ Deployment failed! Service is not running."
-              docker-compose logs
+              docker-compose -f docker-compose.prod.yml logs
               exit 1
             fi
             
@@ -131,6 +148,23 @@ jobs:
       # התראה על הצלחה
       - name: Deployment Success Notification
         run: |
-          echo "🎉 SUCCESS: Application deployed to production!"
+          echo "🎉 SUCCESS: QueenTrack Backend deployed to production!"
           echo "🌐 Production URL: http://${{ secrets.PRODUCTION_HOST }}:8000"
-          echo "📊 You can check the service status with: docker-compose ps"
+          echo "📊 Monitor service: docker-compose -f docker-compose.prod.yml ps"
+          echo "📋 View logs: docker-compose -f docker-compose.prod.yml logs"
+
+      - name: Create deployment package
+        run: |
+          # Create deployment files
+          mkdir -p deploy
+          cp docker-compose.prod.yml deploy/
+
+          # Create secure environment file
+          cat > deploy/.env.production << EOF
+          $(cat .env.production)
+          SERVER_PASSWORD=${{ secrets.SERVER_PASSWORD }}
+          EOF
+
+          # Copy deployment script
+          cp .github/scripts/deploy.sh deploy/
+          chmod +x deploy/deploy.sh
