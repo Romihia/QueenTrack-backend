@@ -14,9 +14,12 @@ from app.services.service import create_event, update_event, get_all_events
 from app.schemas.schema import EventCreate, EventUpdate
 from app.services.email_service import email_service
 from app.services.video_service import video_service
+from app.services.video_format_converter import video_format_converter
+from app.services.video_recording_service import video_recording_service
 import threading
 from pydantic import BaseModel
 import logging
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +47,97 @@ camera_config = {
     "internal_camera_id": None,
     "external_camera_id": None,
 }
+
+# Set up video conversion callback
+def video_conversion_callback(event_id: str, internal_path: str, external_path: str):
+    """Callback להמרת וידאו לאחר סיום הקלטה - sync version"""
+    try:
+        logger.info(f"🎬 Starting video conversion for event {event_id}")
+        
+        # Update conversion status to processing
+        import asyncio
+        asyncio.run(update_conversion_status(event_id, "processing"))
+        
+        # Convert videos using the format converter
+        conversion_results = video_format_converter.convert_event_videos(
+            internal_path, external_path
+        )
+        
+        if conversion_results["conversion_success"]:
+            logger.info(f"✅ Video conversion completed for event {event_id}")
+            
+            # Get URLs for converted videos
+            internal_converted_url = None
+            external_converted_url = None
+            
+            if conversion_results["internal_converted"]:
+                internal_converted_url = video_format_converter.get_video_url_from_path(
+                    conversion_results["internal_converted"]
+                )
+            
+            if conversion_results["external_converted"]:
+                external_converted_url = video_format_converter.get_video_url_from_path(
+                    conversion_results["external_converted"]
+                )
+            
+            logger.info(f"📹 Converted videos for event {event_id}:")
+            logger.info(f"   Internal: {internal_converted_url}")
+            logger.info(f"   External: {external_converted_url}")
+            
+            # Update the database with converted video URLs
+            asyncio.run(update_converted_videos(
+                event_id, 
+                internal_converted_url, 
+                external_converted_url
+            ))
+            
+        else:
+            # Conversion failed
+            error_message = "; ".join(conversion_results["errors"]) if conversion_results["errors"] else "Unknown conversion error"
+            logger.error(f"❌ Video conversion failed for event {event_id}: {error_message}")
+            
+            # Update conversion status to failed
+            asyncio.run(update_conversion_status(event_id, "failed", error_message))
+            
+    except Exception as e:
+        logger.error(f"💥 Video conversion callback error for event {event_id}: {e}")
+        # Update conversion status to failed
+        try:
+            import asyncio
+            asyncio.run(update_conversion_status(event_id, "failed", str(e)))
+        except Exception:
+            pass
+
+# Helper functions for database updates
+async def update_conversion_status(event_id: str, status: str, error_message: str = None):
+    """Update conversion status in database"""
+    try:
+        update_data = EventUpdate(
+            conversion_status=status,
+            conversion_error=error_message if error_message else None
+        )
+        await update_event(event_id, update_data)
+        logger.info(f"📝 Updated conversion status for event {event_id}: {status}")
+    except Exception as e:
+        logger.error(f"Failed to update conversion status for event {event_id}: {e}")
+
+async def update_converted_videos(event_id: str, internal_url: str = None, external_url: str = None):
+    """Update converted video URLs in database"""
+    try:
+        update_data = EventUpdate(
+            internal_video_url_converted=internal_url,
+            external_video_url_converted=external_url,
+            conversion_status="completed"
+        )
+        await update_event(event_id, update_data)
+        logger.info(f"📝 Updated converted video URLs for event {event_id}")
+        logger.info(f"   Internal converted: {internal_url}")
+        logger.info(f"   External converted: {external_url}")
+    except Exception as e:
+        logger.error(f"Failed to update converted video URLs for event {event_id}: {e}")
+
+# Set the conversion callback
+video_recording_service.set_conversion_callback(video_conversion_callback)
 
 # Bee tracking state - פשוט ובסיסי
 bee_state = {
@@ -358,11 +452,23 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                 time_out=current_time,
                 time_in=None,
                 internal_video_url=None,
-                external_video_url=None
+                external_video_url=None,
+                conversion_status="pending"  # Initial status
             )
             new_event = await create_event(event_data)
             bee_state["current_event_id"] = new_event.id
             logger.info(f"📝 Created new event with ID: {new_event.id}")
+            
+            # Start video recording
+            video_paths = video_recording_service.start_event_recording(new_event.id)
+            if video_paths:
+                # Update event with initial video paths
+                update_data = EventUpdate(
+                    internal_video_url=video_paths.get("internal_video"),
+                    external_video_url=video_paths.get("external_video")
+                )
+                await update_event(new_event.id, update_data)
+                logger.info(f"📹 Video recording started for event {new_event.id}")
             
         except Exception as e:
             logger.error(f"💥 Error creating event: {str(e)}")
@@ -398,11 +504,19 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         try:
             current_event_id = bee_state["current_event_id"]
             if current_event_id:
+                # Stop video recording
+                video_paths = video_recording_service.stop_event_recording()
+                
+                # Update event with end time and final video paths
                 event_update = EventUpdate(
-                    time_in=current_time
+                    time_in=current_time,
+                    internal_video_url=video_paths.get("internal_video"),
+                    external_video_url=video_paths.get("external_video")
                 )
                 await update_event(current_event_id, event_update)
-                logger.info(f"📝 Updated event {current_event_id} with end time")
+                logger.info(f"📝 Updated event {current_event_id} with end time and video paths")
+                logger.info(f"🎬 Video conversion will start automatically")
+                
                 bee_state["current_event_id"] = None
                 
         except Exception as e:
@@ -413,6 +527,9 @@ async def set_camera_config(config: CameraConfig):
     """Save camera configuration from the frontend"""
     camera_config["internal_camera_id"] = config.internal_camera_id
     camera_config["external_camera_id"] = config.external_camera_id
+    
+    # Update video recording service
+    video_recording_service.set_external_camera_config(config.external_camera_id)
     
     logger.info(f"Camera configuration updated: Internal: {config.internal_camera_id}, External: {config.external_camera_id}")
     
@@ -426,8 +543,14 @@ async def get_external_camera_status():
         "stream_url": None,
         "last_bee_status": bee_state["current_status"],
         "internal_camera_id": camera_config["internal_camera_id"],
-        "external_camera_id": camera_config["external_camera_id"]
+        "external_camera_id": camera_config["external_camera_id"],
+        "video_recording_status": video_recording_service.get_status()
     }
+
+@router.get("/debug/conversion-status")
+async def get_conversion_status():
+    """Return video conversion service status"""
+    return video_format_converter.get_conversion_status()
 
 @router.get("/debug/bee-tracking-status")
 async def get_bee_tracking_debug_status():
@@ -451,16 +574,22 @@ async def get_bee_tracking_debug_status():
             "full_sequence": bee_state["status_sequence"],
             "looking_for_crossing": "inside → outside" if not bee_state["event_active"] else "outside → inside",
             "crossing_description": "Waiting for bee to exit hive" if not bee_state["event_active"] else "Waiting for bee to return to hive"
-        }
+        },
+        "video_recording": video_recording_service.get_status(),
+        "video_conversion": video_format_converter.get_conversion_status()
     }
 
 @router.get("/debug/model-info")
 async def get_model_info():
     """Return information about the classification model and available classes"""
+    if model_detect is None or model_classify is None:
+        return {"error": "Models not loaded", "models_loaded": False}
+    
     try:
         class_names = model_classify.names if hasattr(model_classify, 'names') else "Not available"
         
         return {
+            "models_loaded": True,
             "classification_model": {
                 "model_file": "best.pt",
                 "class_names": class_names,
@@ -475,7 +604,7 @@ async def get_model_info():
             "position_history_size": POSITION_HISTORY_SIZE
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "models_loaded": False}
 
 @router.websocket("/live-stream")
 async def live_stream(websocket: WebSocket):
@@ -501,6 +630,9 @@ async def live_stream(websocket: WebSocket):
                 continue
 
             processed_frame, bee_status, current_time, event_action = process_frame(frame)
+            
+            # Add processed frame to video recording service buffer
+            video_recording_service.add_processed_frame(processed_frame)
             
             if bee_status is not None:
                 try:
@@ -594,6 +726,26 @@ async def reset_tracking_manually():
     logger.info("🔄 Bee tracking state reset")
     return {"message": "Bee tracking state has been reset", "success": True}
 
+@router.post("/test-conversion")
+async def test_video_conversion():
+    """Test video conversion functionality"""
+    try:
+        # Get conversion status
+        status = video_format_converter.get_conversion_status()
+        
+        # Test with a sample video if available
+        test_results = {
+            "ffmpeg_available": status["ffmpeg_available"],
+            "conversion_directory": status["converted_directory"],
+            "test_conversion": "No sample video available for testing"
+        }
+        
+        return test_results
+        
+    except Exception as e:
+        logger.error(f"Video conversion test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/test-email")
 async def test_email():
     """Test email functionality"""
@@ -635,4 +787,195 @@ async def serve_video(file_path: str, request: Request):
         raise
     except Exception as e:
         logger.error(f"Error serving video {file_path}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error") 
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/manual-convert/{event_id}")
+async def manual_convert_event_videos(event_id: str):
+    """Manually trigger video conversion for a specific event"""
+    try:
+        from app.services.service import get_event_by_id
+        
+        # Get event from database
+        event = await get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Check if conversion is already completed
+        if event.conversion_status == "completed":
+            return {
+                "message": "Event videos already converted",
+                "event_id": event_id,
+                "internal_converted": event.internal_video_url_converted,
+                "external_converted": event.external_video_url_converted
+            }
+        
+        # Check if conversion is already in progress
+        if event.conversion_status == "processing":
+            return {
+                "message": "Conversion already in progress",
+                "event_id": event_id,
+                "status": "processing"
+            }
+        
+        # Get original video paths
+        internal_path = None
+        external_path = None
+        
+        if event.internal_video_url:
+            # Convert URL to full path
+            internal_path = os.path.join(VIDEOS_DIR, event.internal_video_url.lstrip("/videos/"))
+        
+        if event.external_video_url:
+            # Convert URL to full path
+            external_path = os.path.join(VIDEOS_DIR, event.external_video_url.lstrip("/videos/"))
+        
+        if not internal_path and not external_path:
+            raise HTTPException(status_code=400, detail="No videos found for this event")
+        
+        # Start conversion in background
+        logger.info(f"🎬 Manual conversion triggered for event {event_id}")
+        conversion_thread = threading.Thread(
+            target=lambda: asyncio.run(video_conversion_callback(event_id, internal_path, external_path)),
+            daemon=True
+        )
+        conversion_thread.start()
+        
+        return {
+            "message": "Video conversion started",
+            "event_id": event_id,
+            "internal_path": internal_path,
+            "external_path": external_path
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual conversion error for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/conversion-status/{event_id}")
+async def get_event_conversion_status(event_id: str):
+    """Get conversion status for a specific event"""
+    try:
+        from app.services.service import get_event_by_id
+        
+        event = await get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        return {
+            "event_id": event_id,
+            "conversion_status": event.conversion_status,
+            "conversion_error": event.conversion_error,
+            "original_videos": {
+                "internal": event.internal_video_url,
+                "external": event.external_video_url
+            },
+            "converted_videos": {
+                "internal": event.internal_video_url_converted,
+                "external": event.external_video_url_converted
+            },
+            "time_out": event.time_out.isoformat() if event.time_out else None,
+            "time_in": event.time_in.isoformat() if event.time_in else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting conversion status for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/events-needing-conversion")
+async def get_events_needing_conversion():
+    """Get list of events that need video conversion"""
+    try:
+        all_events = await get_all_events()
+        
+        events_needing_conversion = []
+        for event in all_events:
+            # Check if event has videos but no conversion status or failed conversion
+            has_videos = bool(event.internal_video_url or event.external_video_url)
+            needs_conversion = (
+                has_videos and 
+                (not event.conversion_status or event.conversion_status in ["pending", "failed"])
+            )
+            
+            if needs_conversion:
+                events_needing_conversion.append({
+                    "id": event.id,
+                    "time_out": event.time_out.isoformat() if event.time_out else None,
+                    "time_in": event.time_in.isoformat() if event.time_in else None,
+                    "conversion_status": event.conversion_status,
+                    "conversion_error": event.conversion_error,
+                    "has_internal_video": bool(event.internal_video_url),
+                    "has_external_video": bool(event.external_video_url),
+                    "internal_video_converted": bool(event.internal_video_url_converted),
+                    "external_video_converted": bool(event.external_video_url_converted)
+                })
+        
+        return {
+            "total_events": len(all_events),
+            "events_needing_conversion": len(events_needing_conversion),
+            "events": events_needing_conversion
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting events needing conversion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/batch-convert-events")
+async def batch_convert_events():
+    """Convert all events that need conversion"""
+    try:
+        all_events = await get_all_events()
+        
+        conversion_tasks = []
+        for event in all_events:
+            # Check if event needs conversion
+            has_videos = bool(event.internal_video_url or event.external_video_url)
+            needs_conversion = (
+                has_videos and 
+                (not event.conversion_status or event.conversion_status in ["pending", "failed"]) and
+                event.conversion_status != "processing"
+            )
+            
+            if needs_conversion:
+                internal_path = None
+                external_path = None
+                
+                if event.internal_video_url:
+                    internal_path = os.path.join(VIDEOS_DIR, event.internal_video_url.lstrip("/videos/"))
+                
+                if event.external_video_url:
+                    external_path = os.path.join(VIDEOS_DIR, event.external_video_url.lstrip("/videos/"))
+                
+                conversion_tasks.append({
+                    "event_id": event.id,
+                    "internal_path": internal_path,
+                    "external_path": external_path
+                })
+        
+        # Start conversion for all events
+        for task in conversion_tasks:
+            logger.info(f"🎬 Starting batch conversion for event {task['event_id']}")
+            conversion_thread = threading.Thread(
+                target=lambda t=task: asyncio.run(video_conversion_callback(
+                    t["event_id"], t["internal_path"], t["external_path"]
+                )),
+                daemon=True
+            )
+            conversion_thread.start()
+            
+            # Small delay between conversions to avoid overwhelming the system
+            import time
+            time.sleep(1)
+        
+        return {
+            "message": f"Batch conversion started for {len(conversion_tasks)} events",
+            "events_to_convert": len(conversion_tasks),
+            "conversion_tasks": [{"event_id": t["event_id"]} for t in conversion_tasks]
+        }
+        
+    except Exception as e:
+        logger.error(f"Batch conversion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

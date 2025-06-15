@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # התקנת התלויות של Python

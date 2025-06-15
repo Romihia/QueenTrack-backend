@@ -40,11 +40,19 @@ class VideoRecordingService:
         self.external_thread = None
         self.stop_external = False
         
+        # Video conversion callback
+        self.conversion_callback = None
+        
         # Ensure directories exist
         os.makedirs(f"{videos_dir}/events", exist_ok=True)
         os.makedirs(f"{videos_dir}/temp", exist_ok=True)
         
         logger.info("🎥 Video recording service initialized")
+    
+    def set_conversion_callback(self, callback):
+        """הגדר callback לטיפול בהמרת וידאו לאחר סיום הקלטה"""
+        self.conversion_callback = callback
+        logger.info("Video conversion callback set")
     
     def add_frame_to_buffer(self, frame: np.ndarray):
         """הוסף פריים ל-buffer הפנימי (קורה כל הזמן)"""
@@ -107,6 +115,7 @@ class VideoRecordingService:
         # Get the file paths before resetting
         internal_path = self.internal_output_path
         external_path = self.external_output_path
+        event_id = self.current_event_id
         
         # Reset state
         self.is_event_recording = False
@@ -116,12 +125,34 @@ class VideoRecordingService:
         
         logger.info(f"🛑 Event recording stopped")
         
+        # Trigger video conversion in background if callback is set
+        if self.conversion_callback and (internal_path or external_path):
+            logger.info("🔄 Starting post-processing video conversion")
+            conversion_thread = threading.Thread(
+                target=self._trigger_video_conversion,
+                args=(event_id, internal_path, external_path),
+                daemon=True
+            )
+            conversion_thread.start()
+        
         # Return relative paths for the database
         return {
             "internal_video": f"/videos/{os.path.relpath(internal_path, self.videos_dir)}" if internal_path and os.path.exists(internal_path) else None,
             "external_video": f"/videos/{os.path.relpath(external_path, self.videos_dir)}" if external_path and os.path.exists(external_path) else None
         }
     
+    def _trigger_video_conversion(self, event_id: str, internal_path: Optional[str], external_path: Optional[str]):
+        """טריגר להמרת וידאו ברקע"""
+        try:
+            if self.conversion_callback:
+                logger.info(f"🎬 Starting conversion for event {event_id}")
+                # Call sync callback directly
+                self.conversion_callback(event_id, internal_path, external_path)
+            else:
+                logger.warning("No conversion callback set")
+        except Exception as e:
+            logger.error(f"Error in video conversion callback: {e}")
+
     def _start_internal_recording(self):
         """התחל הקלטה פנימית עם שמירת ה-buffer"""
         try:
@@ -309,7 +340,8 @@ class VideoRecordingService:
             "buffer_frames": len(self.internal_buffer),
             "internal_video": self.internal_output_path,
             "external_video": self.external_output_path,
-            "external_camera_configured": bool(self.external_camera_config)
+            "external_camera_configured": bool(self.external_camera_config),
+            "conversion_callback_set": bool(self.conversion_callback)
         }
 
 # Create singleton instance

@@ -14,3 +14,9 @@ pytest-httpx==0.22.0
 python-multipart==0.0.6
 ultralytics
 psutil==5.9.5
+# Video processing
+imageio==2.31.5
+imageio-ffmpeg==0.4.9
+
+# Additional video processing support
+ffmpeg-python==0.2.0

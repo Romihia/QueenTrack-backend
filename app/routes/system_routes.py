@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.services.email_service import email_service
 from app.services.video_service import video_service
+from app.services.video_format_converter import video_format_converter
 import logging
 from datetime import datetime
 import cv2
@@ -45,6 +46,21 @@ async def system_health_check():
             }
         except Exception as e:
             health_status["components"]["video_service"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Check video conversion service
+        try:
+            conversion_status = video_format_converter.get_conversion_status()
+            health_status["components"]["video_conversion"] = {
+                "status": "healthy" if conversion_status["ffmpeg_available"] else "warning",
+                "ffmpeg_available": conversion_status["ffmpeg_available"],
+                "converted_videos_count": conversion_status["converted_videos_count"],
+                "conversion_directory": conversion_status["converted_directory"]
+            }
+        except Exception as e:
+            health_status["components"]["video_conversion"] = {
                 "status": "error",
                 "error": str(e)
             }
@@ -126,7 +142,7 @@ async def system_health_check():
 @router.post("/test-full-system")
 async def test_full_system():
     """
-    Test the complete system workflow
+    Test the complete system workflow including video conversion
     """
     try:
         test_results = {
@@ -164,7 +180,21 @@ async def test_full_system():
                 "error": str(e)
             }
         
-        # Test 3: Camera access (external camera test)
+        # Test 3: Video conversion service
+        try:
+            conversion_status = video_format_converter.get_conversion_status()
+            test_results["tests"]["video_conversion"] = {
+                "status": "passed" if conversion_status["ffmpeg_available"] else "warning",
+                "ffmpeg_available": conversion_status["ffmpeg_available"],
+                "message": "FFmpeg available and ready" if conversion_status["ffmpeg_available"] else "FFmpeg not available"
+            }
+        except Exception as e:
+            test_results["tests"]["video_conversion"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Test 4: Camera access (external camera test)
         try:
             camera_test_passed = False
             for i in range(3):  # Test first 3 cameras
