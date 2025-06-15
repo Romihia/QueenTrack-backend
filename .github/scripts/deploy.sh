@@ -8,7 +8,7 @@ set -e
 echo "🚀 Starting QueenTrack Backend Deployment..."
 
 # Configuration
-PROJECT_DIR="/opt/queentrack"
+PROJECT_DIR="/QueenTrack-backend"
 GITHUB_REPO="https://github.com/Romihia/QueenTrack-backend.git"  # This will be updated automatically by CI/CD
 BRANCH="main"
 
