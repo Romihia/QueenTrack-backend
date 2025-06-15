@@ -40,16 +40,41 @@ fi
 echo "⚙️ Setting up production environment..."
 if [ -f ".env.production" ]; then
     cp .env.production .env
-    echo "✅ Production environment configured"
+    echo "✅ Production environment configured from .env.production"
+    echo "🔍 Environment variables loaded:"
+    grep -E "^[A-Z_]+=.*" .env | head -5 | sed 's/=.*/=***/' || echo "No environment variables found"
 else
-    echo "⚠️ Warning: .env.production not found"
+    echo "❌ ERROR: .env.production file not found!"
+    echo "📁 Files in current directory:"
+    ls -la | grep -E "\.(env|production)" || echo "No environment files found"
+    
     if [ ! -f ".env" ]; then
-        echo "⚠️ No .env file found, creating minimal one..."
+        echo "⚠️ Creating fallback .env file with required variables..."
         cat > .env << EOL
-# Minimal production environment
-NODE_ENV=production
-PORT=8000
+# Fallback production environment - UPDATE THESE VALUES!
+ENV=production
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+
+# DATABASE - These need to be set properly!
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=queentrack_production
+
+# MINIMAL REQUIRED SETTINGS
+SECRET_KEY=fallback-secret-key-change-this
+CORS_ORIGINS=*
+UVICORN_WORKERS=2
+LOG_LEVEL=INFO
+
+# AI MODELS
+YOLO_DETECTION_MODEL=yolov8n.pt
+YOLO_CLASSIFICATION_MODEL=best.pt
+DETECTION_CONFIDENCE=0.7
+
+# HEALTH CHECK
+HEALTHCHECK_ENABLED=true
 EOL
+        echo "⚠️ WARNING: Using fallback environment. Update MongoDB settings!"
     fi
 fi
 

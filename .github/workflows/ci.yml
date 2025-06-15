@@ -75,6 +75,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Pre-deployment validation
+      - name: Validate deployment files
+        run: |
+          echo "🔍 Validating deployment files..."
+
+          # Check for required files
+          if [ ! -f ".env.production" ]; then
+            echo "❌ ERROR: .env.production file not found!"
+            echo "📁 Available files:"
+            ls -la | grep -E "\.(env|production|yml)" || echo "No relevant files found"
+            exit 1
+          fi
+
+          if [ ! -f "docker-compose.prod.yml" ]; then
+            echo "⚠️ WARNING: docker-compose.prod.yml not found, will use docker-compose.yml"
+          fi
+
+          echo "✅ Deployment files validated"
+
       # הכנת מפתח SSH
       - name: Setup SSH Key
         run: |
@@ -94,14 +113,28 @@ jobs:
           # Copy all necessary files
           scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/ || true
 
-          # Copy specific files if they exist
-          if [ -f "docker-compose.prod.yml" ]; then
-            scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+          # Ensure .env.production is copied (critical for deployment)
+          if [ -f ".env.production" ]; then
+            echo "📄 Copying .env.production to server..."
+            scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            echo "✅ .env.production copied successfully"
+          else
+            echo "❌ ERROR: .env.production file not found locally!"
+            exit 1
           fi
 
-          if [ -f ".env.production" ]; then
-            scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+          # Copy docker-compose.prod.yml
+          if [ -f "docker-compose.prod.yml" ]; then
+            echo "📄 Copying docker-compose.prod.yml to server..."
+            scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            echo "✅ docker-compose.prod.yml copied successfully"
+          else
+            echo "⚠️ Warning: docker-compose.prod.yml not found"
           fi
+
+          # Verify files were copied
+          echo "🔍 Verifying files on server..."
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "ls -la /opt/queentrack/.env* || echo 'No .env files found'"
 
       # ביצוע פריסה אוטומטית
       - name: Deploy to Production Server
@@ -131,7 +164,25 @@ jobs:
             echo "⚙️ Setting up production environment..."
             if [ -f ".env.production" ]; then
                 cp .env.production .env
-                echo "✅ Production environment configured"
+                echo "✅ Production environment configured from .env.production"
+                echo "🔍 Environment file contents (first 5 lines):"
+                head -5 .env
+            else
+                echo "❌ ERROR: .env.production file not found on server!"
+                echo "📁 Files in current directory:"
+                ls -la
+                exit 1
+            fi
+            
+            # Verify environment setup before proceeding
+            echo "🔍 Verifying environment setup..."
+            if [ -f ".env" ]; then
+                echo "✅ .env file exists"
+                echo "📋 Key environment variables:"
+                grep -E "^(MONGO_URI|MONGO_DB_NAME|ENV|SERVER_PORT)=" .env | sed 's/=.*/=***/' || echo "Environment variables not found"
+            else
+                echo "❌ ERROR: .env file still not found after setup!"
+                exit 1
             fi
             
             # Stop existing containers
