@@ -77,8 +77,7 @@ class TestVideoProcessingCore:
         assert result == "/videos/subfolder/nested_video.mp4"
 
     @patch('app.routes.video_routes.model_detect')
-    @patch('app.routes.video_routes.model_classify')
-    def test_process_frame_no_detection(self, mock_classify, mock_detect, mock_video_frame):
+    def test_process_frame_no_detection(self, mock_detect, mock_video_frame):
         """Test frame processing when no bees are detected."""
         # Mock YOLO detection to return no results
         mock_detect.return_value = []
@@ -93,26 +92,18 @@ class TestVideoProcessingCore:
         assert processed_frame.shape == mock_video_frame.shape
 
     @patch('app.routes.video_routes.model_detect')
-    @patch('app.routes.video_routes.model_classify')
-    def test_process_frame_bee_detected_inside_roi(self, mock_classify, mock_detect, mock_video_frame):
+    def test_process_frame_bee_detected_inside_roi(self, mock_detect, mock_video_frame):
         """Test frame processing when marked bee is detected inside ROI."""
-        # Mock YOLO detection results
+        # Mock YOLO detection results - unified model
         mock_boxes = MagicMock()
         mock_boxes.xyxy = [[250, 350, 350, 400]]  # Box inside ROI
+        mock_boxes.cls = [1]  # marked_bee class ID
+        mock_boxes.conf = [0.8]  # High confidence
         
         mock_result = MagicMock()
         mock_result.boxes = mock_boxes
+        mock_result.names = {0: "regular_bee", 1: "marked_bee"}
         mock_detect.return_value = [mock_result]
-        
-        # Mock classification results
-        mock_probs = MagicMock()
-        mock_probs.top1 = 0  # marked_bee class
-        mock_probs.top1conf = 0.8  # High confidence
-        
-        mock_classify_result = MagicMock()
-        mock_classify_result.probs = mock_probs
-        mock_classify_result.names = {0: "marked_bee", 1: "normal_bee"}
-        mock_classify.predict.return_value = [mock_classify_result]
         
         processed_frame, bee_status, current_time = process_frame(mock_video_frame)
         
@@ -121,26 +112,18 @@ class TestVideoProcessingCore:
         assert isinstance(current_time, datetime)
 
     @patch('app.routes.video_routes.model_detect')
-    @patch('app.routes.video_routes.model_classify')
-    def test_process_frame_bee_detected_outside_roi(self, mock_classify, mock_detect, mock_video_frame):
+    def test_process_frame_bee_detected_outside_roi(self, mock_detect, mock_video_frame):
         """Test frame processing when marked bee is detected outside ROI."""
-        # Mock YOLO detection results - box outside ROI
+        # Mock YOLO detection results - box outside ROI, unified model
         mock_boxes = MagicMock()
         mock_boxes.xyxy = [[50, 50, 100, 100]]  # Box outside ROI
+        mock_boxes.cls = [1]  # marked_bee class ID
+        mock_boxes.conf = [0.8]  # High confidence
         
         mock_result = MagicMock()
         mock_result.boxes = mock_boxes
+        mock_result.names = {0: "regular_bee", 1: "marked_bee"}
         mock_detect.return_value = [mock_result]
-        
-        # Mock classification results
-        mock_probs = MagicMock()
-        mock_probs.top1 = 0  # marked_bee class
-        mock_probs.top1conf = 0.8  # High confidence
-        
-        mock_classify_result = MagicMock()
-        mock_classify_result.probs = mock_probs
-        mock_classify_result.names = {0: "marked_bee", 1: "normal_bee"}
-        mock_classify.predict.return_value = [mock_classify_result]
         
         processed_frame, bee_status, current_time = process_frame(mock_video_frame)
         
@@ -149,26 +132,18 @@ class TestVideoProcessingCore:
         assert isinstance(current_time, datetime)
 
     @patch('app.routes.video_routes.model_detect')
-    @patch('app.routes.video_routes.model_classify')
-    def test_process_frame_low_confidence_detection(self, mock_classify, mock_detect, mock_video_frame):
+    def test_process_frame_low_confidence_detection(self, mock_detect, mock_video_frame):
         """Test frame processing with low confidence detection."""
-        # Mock YOLO detection results
+        # Mock YOLO detection results - unified model with low confidence
         mock_boxes = MagicMock()
         mock_boxes.xyxy = [[250, 350, 350, 400]]
+        mock_boxes.cls = [1]  # marked_bee class ID
+        mock_boxes.conf = [0.3]  # Low confidence (below 0.5 threshold)
         
         mock_result = MagicMock()
         mock_result.boxes = mock_boxes
+        mock_result.names = {0: "regular_bee", 1: "marked_bee"}
         mock_detect.return_value = [mock_result]
-        
-        # Mock classification results with low confidence
-        mock_probs = MagicMock()
-        mock_probs.top1 = 0  # marked_bee class
-        mock_probs.top1conf = 0.5  # Low confidence (below 0.7 threshold)
-        
-        mock_classify_result = MagicMock()
-        mock_classify_result.probs = mock_probs
-        mock_classify_result.names = {0: "marked_bee", 1: "normal_bee"}
-        mock_classify.predict.return_value = [mock_classify_result]
         
         processed_frame, bee_status, current_time = process_frame(mock_video_frame)
         
