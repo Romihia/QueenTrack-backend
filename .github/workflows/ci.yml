@@ -61,6 +61,42 @@ jobs:
           docker stop queentrack-backend-test || true
           docker rm queentrack-backend-test || true
 
+  # Job אוטומטי למעבר מ-stage ל-main
+  auto-merge-to-main:
+    if: github.ref_name == 'stage'
+    needs: validate-and-docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      - name: Merge stage to main
+        run: |
+          echo "🔄 Starting automatic merge from stage to main..."
+
+          # Switch to main branch
+          git checkout main
+          git pull origin main
+
+          # Merge stage into main
+          echo "🔀 Merging stage branch into main..."
+          git merge origin/stage --no-ff -m "🤖 Auto-merge: stage → main (validated by CI/CD)"
+
+          # Push the merged changes
+          echo "📤 Pushing merged changes to main..."
+          git push origin main
+
+          echo "✅ Successfully merged stage to main!"
+
   # Job אוטומטי לפריסה לפרודקשן
   deploy-to-production:
     if: github.ref == 'refs/heads/main'
@@ -74,6 +110,29 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Create production environment file from secrets
+      - name: Create production environment file
+        run: |
+          echo "🔍 Creating .env.production from GitHub secrets..."
+
+          # Create .env.production from secret
+          if [ -n "${{ secrets.PRODUCTION_ENV_FILE }}" ]; then
+            echo "${{ secrets.PRODUCTION_ENV_FILE }}" > .env.production
+            echo "✅ .env.production created successfully"
+            echo "📋 Environment file size: $(wc -l < .env.production) lines"
+          else
+            echo "❌ ERROR: PRODUCTION_ENV_FILE secret not found!"
+            echo "Please add the PRODUCTION_ENV_FILE secret to GitHub repository settings"
+            exit 1
+          fi
+
+          # Validate docker-compose file
+          if [ ! -f "docker-compose.prod.yml" ]; then
+            echo "⚠️ WARNING: docker-compose.prod.yml not found, will use docker-compose.yml"
+          fi
+
+          echo "✅ Deployment files validated"
 
       # Create production environment file from secrets
       - name: Create production environment file
