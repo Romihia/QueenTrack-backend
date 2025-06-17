@@ -11,8 +11,20 @@ from datetime import datetime
 
 class EventBase(BaseModel):
     time_out: datetime
-    time_in: datetime
-    video_url: Optional[str] = None
+    time_in: Optional[datetime] = None
+    internal_video_url: Optional[str] = None  # וידאו מהמצלמה הפנימית (מקורי)
+    external_video_url: Optional[str] = None  # וידאו מהמצלמה החיצונית (מקורי)
+    
+    # Converted videos (avc1 format for browser compatibility)
+    internal_video_url_converted: Optional[str] = None  # וידאו פנימי מומר (avc1)
+    external_video_url_converted: Optional[str] = None  # וידאו חיצוני מומר (avc1)
+    
+    # Video processing status
+    conversion_status: Optional[str] = None  # "pending", "processing", "completed", "failed"
+    conversion_error: Optional[str] = None  # הודעת שגיאה במקרה של כשל
+    
+    # Backward compatibility 
+    video_url: Optional[str] = None  # שדה ישן לתאימות אחורית
 
 class EventCreate(EventBase):
     """סכמה ליצירת אירוע חדש (כוללת time_out, time_in, video_url)"""
@@ -20,14 +32,21 @@ class EventCreate(EventBase):
 
 class EventUpdate(BaseModel):
     """סכמה לעדכון אירוע (כל השדות אופציונליים)"""
-    time_out: Optional[datetime]
-    time_in: Optional[datetime]
-    video_url: Optional[str]
+    time_out: Optional[datetime] = None
+    time_in: Optional[datetime] = None
+    internal_video_url: Optional[str] = None
+    external_video_url: Optional[str] = None
+    internal_video_url_converted: Optional[str] = None
+    external_video_url_converted: Optional[str] = None
+    conversion_status: Optional[str] = None
+    conversion_error: Optional[str] = None
+    video_url: Optional[str] = None  # שדה ישן לתאימות אחורית
 
 class EventDB(EventBase):
     """סכמה שמייצגת את האירוע כפי שנשמר/מוחזר מה-DB"""
     id: str = Field(..., alias="_id")  
 
-    class Config:
-        allow_population_by_field_name = True
-        # כדי לתמוך בהמרת _id -> id
+    model_config = {
+        "populate_by_name": True,  # Updated from 'allow_population_by_field_name' for Pydantic V2
+        "from_attributes": True
+    }

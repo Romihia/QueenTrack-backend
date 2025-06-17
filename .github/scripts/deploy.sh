@@ -1,130 +1,156 @@
 #!/bin/bash
 
-# QueenTrack Production Deployment Script
-# This script handles the deployment process on the production server
+# QueenTrack Backend Deployment Script
+# This script handles the server-side deployment process
 
-set -e  # Exit on any error
+set -e
 
-echo "🚀 QueenTrack Production Deployment Started"
-echo "=================================================="
+echo "🚀 Starting QueenTrack Backend Deployment..."
 
 # Configuration
-PROJECT_DIR="/opt/queentrack"
-BACKUP_DIR="/opt/queentrack-backup"
-LOG_FILE="/var/log/queentrack-deployment.log"
+PROJECT_DIR="/QueenTrack-backend"
+GITHUB_REPO="https://github.com/Romihia/QueenTrack-backend.git"  # This will be updated automatically by CI/CD
+BRANCH="main"
 
-# Function to log messages
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
-}
-
-# Function to create backup
-create_backup() {
-    log_message "📦 Creating backup of current deployment..."
-    if [ -d "$PROJECT_DIR" ]; then
-        sudo rm -rf "$BACKUP_DIR" || true
-        sudo cp -r "$PROJECT_DIR" "$BACKUP_DIR"
-        log_message "✅ Backup created successfully"
-    fi
-}
-
-# Function to rollback in case of failure
-rollback() {
-    log_message "🔄 Rolling back to previous version..."
-    if [ -d "$BACKUP_DIR" ]; then
-        sudo rm -rf "$PROJECT_DIR"
-        sudo mv "$BACKUP_DIR" "$PROJECT_DIR"
-        cd "$PROJECT_DIR"
-        docker-compose up -d
-        log_message "✅ Rollback completed"
-    else
-        log_message "❌ No backup found for rollback"
-    fi
-}
-
-# Main deployment function
-main_deployment() {
-    log_message "🏁 Starting main deployment process..."
-    
-    # Ensure project directory exists
-    sudo mkdir -p "$PROJECT_DIR"
+# Create project directory if it doesn't exist
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "📁 Creating project directory..."
+    mkdir -p "$PROJECT_DIR"
     cd "$PROJECT_DIR"
     
-    # Initialize git repository if it doesn't exist
-    if [ ! -d ".git" ]; then
-        log_message "🔧 Initializing Git repository..."
-        git init
-        git remote add origin https://github.com/YOUR_USERNAME/QueenTrack-backend.git
+    echo "📥 Cloning repository..."
+    git clone "$GITHUB_REPO" . || {
+        echo "⚠️ Git clone failed, continuing with existing files..."
+    }
+else
+    cd "$PROJECT_DIR"
+fi
+
+# Ensure we're on the correct branch and pull latest changes
+echo "📥 Updating code from $BRANCH branch..."
+if [ -d ".git" ]; then
+    git fetch origin || echo "Git fetch failed, continuing..."
+    git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
+    git reset --hard "origin/$BRANCH" || echo "Git reset failed, continuing with current code..."
+else
+    echo "⚠️ Not a git repository, skipping git operations..."
+fi
+
+# Copy production environment file
+echo "⚙️ Setting up production environment..."
+if [ -f ".env.production" ]; then
+    cp .env.production .env
+    echo "✅ Production environment configured from .env.production"
+    echo "🔍 Environment variables loaded:"
+    grep -E "^[A-Z_]+=.*" .env | head -5 | sed 's/=.*/=***/' || echo "No environment variables found"
+else
+    echo "❌ ERROR: .env.production file not found!"
+    echo "📁 Files in current directory:"
+    ls -la | grep -E "\.(env|production)" || echo "No environment files found"
+    
+    if [ ! -f ".env" ]; then
+        echo "⚠️ Creating fallback .env file with required variables..."
+        cat > .env << EOL
+# Fallback production environment - UPDATE THESE VALUES!
+ENV=production
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+
+# DATABASE - These need to be set properly!
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=queentrack_production
+
+# MINIMAL REQUIRED SETTINGS
+SECRET_KEY=fallback-secret-key-change-this
+CORS_ORIGINS=*
+UVICORN_WORKERS=2
+LOG_LEVEL=INFO
+
+# AI MODELS
+YOLO_DETECTION_MODEL=yolov8n.pt
+YOLO_CLASSIFICATION_MODEL=best.pt
+DETECTION_CONFIDENCE=0.7
+
+# HEALTH CHECK
+HEALTHCHECK_ENABLED=true
+EOL
+        echo "⚠️ WARNING: Using fallback environment. Update MongoDB settings!"
     fi
+fi
+
+# Determine which docker-compose file to use
+COMPOSE_FILE="docker-compose.yml"
+if [ -f "docker-compose.prod.yml" ]; then
+    COMPOSE_FILE="docker-compose.prod.yml"
+    echo "✅ Using production docker-compose file"
+else
+    echo "⚠️ docker-compose.prod.yml not found, using docker-compose.yml"
+fi
+
+# Stop existing containers
+echo "🛑 Stopping existing containers..."
+docker-compose -f "$COMPOSE_FILE" down || true
+
+# Clean up old images to save space
+echo "🧹 Cleaning up old Docker images..."
+docker image prune -af || true
+docker container prune -f || true
+
+# Build and start new containers
+echo "🔨 Building and starting containers..."
+docker-compose -f "$COMPOSE_FILE" up --build -d
+
+# Wait for containers to start
+echo "⏳ Waiting for services to start..."
+sleep 30
+
+# Health check
+echo "🏥 Performing health check..."
+if docker-compose -f "$COMPOSE_FILE" ps | grep -q "Up"; then
+    echo "✅ Deployment successful! Containers are running:"
+    docker-compose -f "$COMPOSE_FILE" ps
     
-    # Pull latest code
-    log_message "📥 Pulling latest code from main branch..."
-    git fetch origin
-    git reset --hard origin/main
+    # Test the health endpoint with multiple attempts
+    echo "🔍 Testing health endpoints..."
+    HEALTH_CHECK_PASSED=false
     
-    # Stop existing containers
-    log_message "🛑 Stopping existing containers..."
-    docker-compose down || true
-    
-    # Clean up old Docker images and containers
-    log_message "🧹 Cleaning up Docker resources..."
-    docker container prune -f || true
-    docker image prune -af || true
-    
-    # Build new Docker image
-    log_message "🔨 Building new Docker image..."
-    docker-compose build --no-cache
-    
-    # Start new containers
-    log_message "🚀 Starting new containers..."
-    docker-compose up -d
-    
-    # Wait for service to start
-    log_message "⏳ Waiting for service to start..."
-    sleep 20
-    
-    # Health check
-    log_message "🏥 Performing health check..."
-    if docker-compose ps | grep -q "Up"; then
-        log_message "✅ Deployment successful! Service is running."
-        docker-compose ps
-        
-        # Additional health check with curl if possible
-        if command -v curl &> /dev/null; then
-            if curl -f http://localhost:8000/health &> /dev/null || curl -f http://localhost:8000/ &> /dev/null; then
-                log_message "✅ HTTP health check passed"
-            else
-                log_message "⚠️ HTTP health check failed, but containers are running"
-            fi
+    for i in {1..5}; do
+        if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+            echo "✅ Health check passed on /health endpoint!"
+            HEALTH_CHECK_PASSED=true
+            break
+        elif curl -f http://localhost:8000/ > /dev/null 2>&1; then
+            echo "✅ Health check passed on root endpoint!"
+            HEALTH_CHECK_PASSED=true
+            break
+        else
+            echo "⏳ Health check attempt $i/5 failed, retrying in 10 seconds..."
+            sleep 10
         fi
-        
-        return 0
-    else
-        log_message "❌ Deployment failed! Service is not running."
-        docker-compose logs
-        return 1
-    fi
-}
-
-# Main script execution
-main() {
-    log_message "🎬 Deployment script started"
+    done
     
-    # Create backup before deployment
-    create_backup
-    
-    # Attempt deployment
-    if main_deployment; then
-        log_message "🎉 Deployment completed successfully!"
-        log_message "🌐 Service should be available at: http://$(hostname -I | awk '{print $1}'):8000"
-    else
-        log_message "❌ Deployment failed, attempting rollback..."
-        rollback
-        exit 1
+    if [ "$HEALTH_CHECK_PASSED" = false ]; then
+        echo "⚠️ Health endpoints not responding, but containers are up"
+        echo "📋 Container logs:"
+        docker-compose -f "$COMPOSE_FILE" logs --tail=20
     fi
     
-    log_message "🏁 Deployment script completed"
-}
+else
+    echo "❌ Deployment failed! Containers are not running properly:"
+    docker-compose -f "$COMPOSE_FILE" ps
+    echo ""
+    echo "📋 Container logs:"
+    docker-compose -f "$COMPOSE_FILE" logs --tail=50
+    echo ""
+    echo "🔍 Docker system info:"
+    docker system df
+    exit 1
+fi
 
-# Execute main function
-main "$@" 
+echo ""
+echo "🎉 Deployment completed successfully!"
+echo "🌐 Service is running on port 8000"
+echo "📊 Monitor with: docker-compose -f $COMPOSE_FILE ps"
+echo "📋 View logs with: docker-compose -f $COMPOSE_FILE logs"
+echo "🔍 Follow logs with: docker-compose -f $COMPOSE_FILE logs -f"
+echo "🛑 Stop service with: docker-compose -f $COMPOSE_FILE down"

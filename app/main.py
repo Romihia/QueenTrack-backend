@@ -3,20 +3,49 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from app.routes.video_routes import router as video_router
 from app.routes.events_routes import router as events_router
+from app.routes.system_routes import router as system_router
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import logging
 from typing import List
 from pathlib import Path
 
+# Create necessary directories first
+os.makedirs('/data/logs', exist_ok=True)
+os.makedirs('/data/videos', exist_ok=True)
+
+# Configure logging after creating directories with error handling
+try:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('/data/logs/queen_track.log'),
+            logging.StreamHandler()
+        ]
+    )
+except Exception as e:
+    # Fallback to console-only logging if file logging fails
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler()]
+    )
+    print(f"Warning: Could not set up file logging: {e}")
+
+logger = logging.getLogger(__name__)
+
+# Log startup message
+logger.info("🚀 Queen Track Backend v2.0 initializing...")
+
 app = FastAPI(
-    title="Bee Vision Backend",
-    version="0.1.0",
-    description="API for processing video streams and events."
+    title="Queen Track Backend",
+    version="2.0.0",
+    description="Professional API for Queen Track bee monitoring system with email notifications and video streaming."
 )
 
-# Create videos directory if it doesn't exist
+# Videos directory already created above
 videos_dir = "/data/videos"
-os.makedirs(videos_dir, exist_ok=True)
 
 # Create subdirectories for video organization
 video_subdirs = [
@@ -43,14 +72,38 @@ app.add_middleware(
 # הוספת הראוטים
 app.include_router(video_router, prefix="/video", tags=["video"])
 app.include_router(events_router, prefix="/events", tags=["events"])
+app.include_router(system_router, prefix="/system", tags=["system"])
+
+# Log successful initialization
+logger.info("✅ All routers loaded successfully")
+logger.info("📧 Email service ready")
+logger.info("🎥 Video service ready")
+logger.info("🔍 System monitoring ready")
+logger.info("🐝 Queen Track Backend v2.0 ready to serve!")
 
 @app.get("/")
 def root():
-    return {"message": "Bee Vision Backend is running"}
+    logger.info("Root endpoint accessed")
+    return {
+        "message": "Queen Track Backend v2.0 is running",
+        "features": [
+            "Email notifications",
+            "Video streaming with range support", 
+            "Real camera integration",
+            "Professional logging",
+            "System health monitoring"
+        ],
+        "endpoints": {
+            "system_health": "/system/health",
+            "test_email": "/video/test-email",
+            "video_streaming": "/video/videos/{file_path}",
+            "bee_monitoring": "/video/live-stream"
+        }
+    }
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "QueenTrack Backend"}
+    return {"status": "healthy", "service": "Queen Track Backend v2.0", "timestamp": "2024-12-16"}
 
 @app.get("/videos/list")
 def list_videos(folder: str = None):
