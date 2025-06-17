@@ -44,12 +44,48 @@ jobs:
       - name: Stop Docker Container
         run: docker stop bee-vision-backend-test && docker rm bee-vision-backend-test
 
+  # Job אוטומטי למעבר מ-stage ל-main
+  auto-merge-to-main:
+    if: github.ref_name == 'stage'
+    needs: validate-and-docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      - name: Merge stage to main
+        run: |
+          echo "🔄 Starting automatic merge from stage to main..."
+
+          # Switch to main branch
+          git checkout main
+          git pull origin main
+
+          # Merge stage into main
+          echo "🔀 Merging stage branch into main..."
+          git merge origin/stage --no-ff -m "🤖 Auto-merge: stage → main (validated by CI/CD)"
+
+          # Push the merged changes
+          echo "📤 Pushing merged changes to main..."
+          git push origin main
+
+          echo "✅ Successfully merged stage to main!"
+
   # Job אוטומטי לפריסה לפרודקשן
   deploy-to-production:
     if: github.ref_name == 'main'
-    needs: validate-and-docker
+    needs: [validate-and-docker]
     runs-on: ubuntu-latest
-    
+
     environment:
       name: production
       url: http://162.55.53.52:8000
@@ -57,6 +93,29 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      # Create production environment file from secrets
+      - name: Create production environment file
+        run: |
+          echo "🔍 Creating .env.production from GitHub secrets..."
+
+          # Create .env.production from secret
+          if [ -n "${{ secrets.PRODUCTION_ENV_FILE }}" ]; then
+            echo "${{ secrets.PRODUCTION_ENV_FILE }}" > .env.production
+            echo "✅ .env.production created successfully"
+            echo "📋 Environment file size: $(wc -l < .env.production) lines"
+          else
+            echo "❌ ERROR: PRODUCTION_ENV_FILE secret not found!"
+            echo "Please add the PRODUCTION_ENV_FILE secret to GitHub repository settings"
+            exit 1
+          fi
+
+          # Validate docker-compose file
+          if [ ! -f "docker-compose.prod.yml" ]; then
+            echo "⚠️ WARNING: docker-compose.prod.yml not found, will use docker-compose.yml"
+          fi
+
+          echo "✅ Deployment files validated"
 
       # הכנת מפתח SSH
       - name: Setup SSH Key
@@ -66,54 +125,127 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
 
+      # יצירת תיקיית הפרויקט בשרת
+      - name: Create project directory
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "mkdir -p /opt/queentrack"
+
       # העברת קבצי הפריסה לשרת
       - name: Copy deployment files
         run: |
-          scp -i ~/.ssh/id_rsa docker-compose.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
-          scp -i ~/.ssh/id_rsa -r .github/scripts/deploy.sh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+          # Copy all necessary files
+          scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/ || true
+
+          # Ensure .env.production is copied (critical for deployment)
+          if [ -f ".env.production" ]; then
+            echo "📄 Copying .env.production to server..."
+            scp -i ~/.ssh/id_rsa .env.production ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            echo "✅ .env.production copied successfully"
+          else
+            echo "❌ ERROR: .env.production file not found locally!"
+            exit 1
+          fi
+
+          # Copy docker-compose.prod.yml
+          if [ -f "docker-compose.prod.yml" ]; then
+            echo "📄 Copying docker-compose.prod.yml to server..."
+            scp -i ~/.ssh/id_rsa docker-compose.prod.yml ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}:/opt/queentrack/
+            echo "✅ docker-compose.prod.yml copied successfully"
+          else
+            echo "⚠️ Warning: docker-compose.prod.yml not found"
+          fi
+
+          # Verify files were copied
+          echo "🔍 Verifying files on server..."
+          ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} "ls -la /opt/queentrack/.env* || echo 'No .env files found'"
 
       # ביצוע פריסה אוטומטית
       - name: Deploy to Production Server
+        env:
+          GITHUB_REPO: ${{ github.repository }}
         run: |
           ssh -i ~/.ssh/id_rsa ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
             set -e
-            echo "🚀 Starting deployment process..."
+            echo "🚀 Starting QueenTrack deployment process..."
             
-            # מעבר לתיקיית הפרויקט
+            # Navigate to project directory
             cd /opt/queentrack
             
-            # עדכון הקוד מ-Git
+            # Setup Git if not already done
+            if [ ! -d ".git" ]; then
+              echo "📥 Initializing git repository..."
+              git init
+              git remote add origin https://github.com/$GITHUB_REPO.git
+            fi
+            
+            # Pull latest code from main branch
             echo "📥 Pulling latest code from main branch..."
-            git fetch origin
-            git reset --hard origin/main
+            git fetch origin main || echo "Fetch failed, continuing with existing code"
+            git checkout main 2>/dev/null || git checkout -b main
             
-            # בדיקה אם יש קונטיינרים פעילים
+            # Setup production environment
+            echo "⚙️ Setting up production environment..."
+            if [ -f ".env.production" ]; then
+                cp .env.production .env
+                echo "✅ Production environment configured from .env.production"
+                echo "🔍 Environment file contents (first 5 lines):"
+                head -5 .env
+            else
+                echo "❌ ERROR: .env.production file not found on server!"
+                echo "📁 Files in current directory:"
+                ls -la
+                exit 1
+            fi
+            
+            # Verify environment setup before proceeding
+            echo "🔍 Verifying environment setup..."
+            if [ -f ".env" ]; then
+                echo "✅ .env file exists"
+                echo "📋 Key environment variables:"
+                grep -E "^(MONGO_URI|MONGO_DB_NAME|ENV|SERVER_PORT)=" .env | sed 's/=.*/=***/' || echo "Environment variables not found"
+            else
+                echo "❌ ERROR: .env file still not found after setup!"
+                exit 1
+            fi
+            
+            # Stop existing containers
             echo "🛑 Stopping existing containers..."
-            docker-compose down || true
+            if [ -f "docker-compose.prod.yml" ]; then
+              docker compose -f docker-compose.prod.yml down || true
+            else
+              echo "⚠️ docker-compose.prod.yml not found, using docker-compose.yml"
+              docker compose down || true
+            fi
             
-            # מחיקת תמונות Docker ישנות (לחיסכון במקום)
+            # Clean up old Docker images
             echo "🧹 Cleaning up old Docker images..."
-            docker image prune -af || true
+            docker system prune -f || true
             
-            # בניית תמונת Docker חדשה
-            echo "🔨 Building new Docker image..."
-            docker-compose build --no-cache
+            # Build and start new containers
+            echo "🔨 Building and starting new containers..."
+            if [ -f "docker-compose.prod.yml" ]; then
+              docker compose -f docker-compose.prod.yml up --build -d
+            else
+              docker compose up --build -d
+            fi
             
-            # הרצת הקונטיינרים החדשים
-            echo "🚀 Starting new containers..."
-            docker-compose up -d
+            # Wait for services to start
+            echo "⏳ Waiting for services to start..."
+            sleep 30
             
-            # בדיקת בריאות השירות
+            # Health check
             echo "🏥 Checking service health..."
-            sleep 15
+            COMPOSE_FILE="docker-compose.prod.yml"
+            if [ ! -f "$COMPOSE_FILE" ]; then
+              COMPOSE_FILE="docker-compose.yml"
+            fi
             
-            # בדיקה שהקונטיינר פועל
-            if docker-compose ps | grep -q "Up"; then
+            if docker compose -f $COMPOSE_FILE ps | grep -q "Up"; then
               echo "✅ Deployment successful! Service is running."
-              docker-compose ps
+              docker compose -f $COMPOSE_FILE ps
             else
               echo "❌ Deployment failed! Service is not running."
-              docker-compose logs
+              docker compose -f $COMPOSE_FILE logs --tail=50
               exit 1
             fi
             
@@ -124,13 +256,32 @@ jobs:
       - name: Final Health Check
         run: |
           echo "🔍 Performing final health check..."
-          sleep 10
+          sleep 15
+
           # בדיקה אם השירות מגיב מהאינטרנט
-          curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/health || curl -f http://${{ secrets.PRODUCTION_HOST }}:8000/ || echo "⚠️ Service may not have health endpoint, but deployment completed."
+          for i in {1..5}; do
+            if curl -f "http://${{ secrets.PRODUCTION_HOST }}:8000/health" 2>/dev/null || curl -f "http://${{ secrets.PRODUCTION_HOST }}:8000/" 2>/dev/null; then
+              echo "✅ Final health check passed!"
+              break
+            else
+              echo "⏳ Health check attempt $i failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
 
       # התראה על הצלחה
       - name: Deployment Success Notification
+        if: success()
         run: |
-          echo "🎉 SUCCESS: Application deployed to production!"
+          echo "🎉 SUCCESS: QueenTrack Backend deployed to production!"
           echo "🌐 Production URL: http://${{ secrets.PRODUCTION_HOST }}:8000"
-          echo "📊 You can check the service status with: docker-compose ps"
+          echo "📊 Monitor service with SSH and run: docker compose ps"
+          echo "📋 View logs with SSH and run: docker compose logs"
+
+      # התראה על כישלון
+      - name: Deployment Failure Notification
+        if: failure()
+        run: |
+          echo "❌ FAILURE: QueenTrack Backend deployment failed!"
+          echo "🔍 Check the logs above for more details"
+          echo "🛠️ Connect to server via SSH to troubleshoot"
