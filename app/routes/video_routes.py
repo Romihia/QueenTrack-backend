@@ -34,9 +34,9 @@ class CameraConfig(BaseModel):
 
 router = APIRouter()
 
-# Initialize YOLO models
-model_detect = YOLO("yolov8n.pt")
-model_classify = YOLO("best.pt")
+# Initialize YOLO model - unified detection & classification
+model_detect = YOLO("best.pt")  # Your trained model that detects regular_bee (0) and marked_bee (1)
+# Removed model_classify - no longer needed since detection model handles classification
 
 # Video storage configuration
 VIDEOS_DIR = "/data/videos"
@@ -150,8 +150,8 @@ bee_state = {
 }
 
 # Configuration constants
-FRAME_WIDTH = 640  # Default frame width
-FRAME_HEIGHT = 480  # Default frame height
+FRAME_WIDTH = 1280  # Default frame width
+FRAME_HEIGHT = 720  # Default frame height
 CENTER_LINE_X = FRAME_WIDTH // 2  # Vertical center line
 MIN_CONSECUTIVE_DETECTIONS = 3
 POSITION_HISTORY_SIZE = 1000  # Keep 1000 points instead of 50
@@ -295,6 +295,106 @@ def draw_bee_path(frame):
     
     return frame
 
+def find_bee_location_in_frame(frame):
+    """
+    Try to estimate bee location in frame using computer vision techniques
+    This is a temporary solution for classification models that don't provide bounding boxes
+    """
+    try:
+        # Convert to different color spaces for better detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Method 1: Look for dark spots (bees are usually darker)
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Find dark regions (potential bees) - use adaptive threshold for better results
+        binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Filter contours by size (bee-like objects)
+            min_area = 50  # Minimum area for a bee
+            max_area = 2000  # Maximum area for a bee
+            
+            logger.debug(f"🔍 Found {len(contours)} contours, filtering by size ({min_area}-{max_area})")
+            
+            bee_candidates = []
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if min_area <= area <= max_area:
+                    # Get contour center
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Calculate aspect ratio
+                        x, y, w, h = cv2.boundingRect(contour)
+                        aspect_ratio = float(w) / h
+                        
+                        # Bees are roughly oval, so aspect ratio should be reasonable
+                        if 0.3 <= aspect_ratio <= 3.0:
+                            bee_candidates.append((cx, cy, area, aspect_ratio))
+                            logger.debug(f"  Candidate: pos=({cx}, {cy}), area={area}, aspect_ratio={aspect_ratio:.2f}")
+            
+            if bee_candidates:
+                # Sort by area (larger objects more likely to be bees)
+                bee_candidates.sort(key=lambda x: x[2], reverse=True)
+                
+                # Return the center of the largest candidate
+                best_candidate = bee_candidates[0]
+                logger.debug(f"🎯 Selected best candidate: pos=({best_candidate[0]}, {best_candidate[1]}), area={best_candidate[2]}, aspect_ratio={best_candidate[3]:.2f}")
+                return (best_candidate[0], best_candidate[1])
+            else:
+                logger.debug("🔍 No suitable contour candidates found (size/aspect ratio filters)")
+        else:
+            logger.debug("🔍 No contours found in binary image")
+        
+        # Method 2: Look for colored markers if the bee has a colored mark
+        # Define color ranges for common bee markers (red, blue, yellow, etc.)
+        color_ranges = [
+            # Red marker
+            ([0, 50, 50], [10, 255, 255]),
+            ([170, 50, 50], [180, 255, 255]),
+            # Blue marker  
+            ([100, 50, 50], [130, 255, 255]),
+            # Yellow marker
+            ([20, 50, 50], [30, 255, 255]),
+            # Green marker
+            ([40, 50, 50], [80, 255, 255])
+        ]
+        
+        for lower, upper in color_ranges:
+            lower = np.array(lower, dtype=np.uint8)
+            upper = np.array(upper, dtype=np.uint8)
+            
+            # Create mask for this color range
+            mask = cv2.inRange(hsv, lower, upper)
+            
+            # Find contours in the mask
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if 20 <= area <= 500:  # Smaller area for colored markers
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        logger.debug(f"🎨 Found colored marker at ({cx}, {cy}) with area {area}")
+                        return (cx, cy)
+        
+        logger.debug("🔍 No bee candidates found using computer vision")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error in find_bee_location_in_frame: {e}")
+        return None
+
 def process_frame(frame):
     """Process frame for bee detection and classification"""
     time_str = format_time(time.time() * 1000)
@@ -302,112 +402,276 @@ def process_frame(frame):
     processed_frame = frame.copy()
 
     try:
-        results_detect = model_detect(processed_frame)
+        results_detect = model_detect(processed_frame, conf=0.4)  # Lower confidence threshold to ensure boxes are created
     except Exception as e:
         logger.error(f"YOLO detection failed: {e}")
         cv2.putText(processed_frame, f"Detection Error: {str(e)[:50]}", 
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return processed_frame, None, current_time, None
     
+    # Debug logging to understand the results structure
+    logger.info(f"🔍 YOLO Results Debug:")
+    logger.info(f"   results_detect type: {type(results_detect)}")
+    logger.info(f"   results_detect length: {len(results_detect) if results_detect else 0}")
+    
+    if results_detect and len(results_detect) > 0:
+        result = results_detect[0]
+        logger.info(f"   First result type: {type(result)}")
+        logger.info(f"   Has 'boxes' attribute: {hasattr(result, 'boxes')}")
+        
+        if hasattr(result, 'boxes'):
+            boxes = result.boxes
+            logger.info(f"   boxes type: {type(boxes)}")
+            logger.info(f"   boxes is None: {boxes is None}")
+            
+            if boxes is not None:
+                logger.info(f"   Has 'xyxy' attribute: {hasattr(boxes, 'xyxy')}")
+                logger.info(f"   Has 'cls' attribute: {hasattr(boxes, 'cls')}")
+                logger.info(f"   Has 'conf' attribute: {hasattr(boxes, 'conf')}")
+                
+                if hasattr(boxes, 'xyxy'):
+                    logger.info(f"   xyxy shape: {boxes.xyxy.shape if hasattr(boxes.xyxy, 'shape') else 'No shape attr'}")
+                    logger.info(f"   Number of detections: {len(boxes.xyxy) if boxes.xyxy is not None else 0}")
+
     bee_detected = False
     bee_status = None
     event_action = None
     
+
+    
+    if results_detect and len(results_detect) > 0:
+        result = results_detect[0]
+        
+        # Try to access boxes first (standard format)
+        if hasattr(result, 'boxes') and result.boxes is not None:
+            boxes = result.boxes
+            
+            # Check all required attributes exist and are not None
+            has_xyxy = hasattr(boxes, 'xyxy') and boxes.xyxy is not None
+            has_cls = hasattr(boxes, 'cls') and boxes.cls is not None  
+            has_conf = hasattr(boxes, 'conf') and boxes.conf is not None
+            
+            if has_xyxy and has_cls and has_conf:
+                # Check if we have actual detections
+                try:
+                    num_detections = len(boxes.xyxy)
+                    if num_detections > 0:
+                        logger.info(f"✅ Standard YOLO detection format found with {num_detections} detections")
+                        
+                        # Process each detection
+                        for i in range(num_detections):
+                            try:
+                                # Get bounding box coordinates
+                                xyxy_box = boxes.xyxy[i]
+                                if len(xyxy_box) >= 4:
+                                    x1, y1, x2, y2 = map(int, xyxy_box[:4])
+                                    
+                                    # Get class information from detection results
+                                    cls_id = int(boxes.cls[i])  # Class ID from detection
+                                    conf = float(boxes.conf[i])  # Confidence from detection
+                                    cls_name = result.names.get(cls_id, f"class_{cls_id}")  # Class name from model
+                                    
+                                    logger.debug(f"Detection {i}: class='{cls_name}' (ID: {cls_id}), confidence={conf:.3f}")
+                                    
+                                    # Check if this is a marked bee (class 1) with sufficient confidence
+                                    is_marked_bee = (cls_id == 1 and conf > 0.3)  # Temporarily lowered threshold from 0.5 to 0.3 for testing
+                                    
+                                    if is_marked_bee:
+                                        bee_detected = True
+                                        logger.info(f"✅ MARKED BEE DETECTED: class='{cls_name}', confidence={conf:.3f}, box=[{x1},{y1},{x2},{y2}]")
+                                        
+                                        x_center = (x1 + x2) // 2
+                                        y_center = (y1 + y2) // 2
+                                        
+                                        # Check if enough consecutive detections
+                                        consecutive_inside = bee_state["consecutive_detections"]["inside"]
+                                        consecutive_outside = bee_state["consecutive_detections"]["outside"]
+                                        
+                                        if consecutive_inside < MIN_CONSECUTIVE_DETECTIONS and consecutive_outside < MIN_CONSECUTIVE_DETECTIONS:
+                                            logger.debug(f"Not enough consecutive detections: inside={consecutive_inside}, outside={consecutive_outside}")
+                                        
+                                        bee_status, event_action = detect_sequence_pattern(x_center, y_center, current_time)
+                                        
+                                        # Add to position history
+                                        raw_status = "inside" if is_inside_hive(x_center, y_center) else "outside"
+                                        timestamp = current_time.timestamp()
+                                        bee_state["position_history"].append((x_center, y_center, timestamp, raw_status))
+                                        if len(bee_state["position_history"]) > POSITION_HISTORY_SIZE:
+                                            bee_state["position_history"] = bee_state["position_history"][-POSITION_HISTORY_SIZE:]
+                                        
+                                        logger.info(f"Bee position: ({x_center}, {y_center}), Status: {bee_status}, Raw: {raw_status}, Event: {event_action}")
+                                        logger.info(f"Center line check: inside={is_inside_hive(x_center, y_center)}, Center_X={CENTER_LINE_X}")
+                                        logger.info(f"Consecutive counts: inside={consecutive_inside}, outside={consecutive_outside}")
+                                        logger.info(f"Sequence: {' → '.join(bee_state['status_sequence'][-5:]) if bee_state['status_sequence'] else 'Empty'}")
+                                        
+                                        # Store bee image for email notifications
+                                        padding = 30
+                                        x1_padded = max(0, x1 - padding)
+                                        y1_padded = max(0, y1 - padding) 
+                                        x2_padded = min(processed_frame.shape[1], x2 + padding)
+                                        y2_padded = min(processed_frame.shape[0], y2 + padding)
+                                        
+                                        bee_image = processed_frame[y1_padded:y2_padded, x1_padded:x2_padded].copy()
+                                        
+                                        if not hasattr(process_frame, 'last_bee_image'):
+                                            process_frame.last_bee_image = None
+                                        process_frame.last_bee_image = bee_image
+                                        
+                                        # Draw bee visualization
+                                        color = (0, 255, 0) if raw_status == "inside" else (255, 165, 0)
+                                        cv2.rectangle(processed_frame, (x1, y1), (x2, y2), color, 3)
+                                        
+                                        # Draw crosshair at center
+                                        cv2.line(processed_frame, (x_center - 10, y_center), (x_center + 10, y_center), (255, 255, 255), 2)
+                                        cv2.line(processed_frame, (x_center, y_center - 10), (x_center, y_center + 10), (255, 255, 255), 2)
+                                        
+                                        # Draw info
+                                        info_texts = [
+                                            f"MARKED BEE - {raw_status.upper()}",
+                                            f"Pos: ({x_center}, {y_center})",
+                                            f"Conf: {conf:.2f}",
+                                            f"Event: {'ACTIVE' if bee_state['event_active'] else 'INACTIVE'}",
+                                            f"Cons: I={consecutive_inside} O={consecutive_outside}"
+                                        ]
+                                        
+                                        y_offset = max(50, y1 - 120)
+                                        for j, text in enumerate(info_texts):
+                                            cv2.putText(processed_frame, text, (x1, y_offset + j * 20),
+                                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                                            cv2.putText(processed_frame, text, (x1, y_offset + j * 20),
+                                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                                        
+                                        break  # Only process first marked bee detection
+                                        
+                            except Exception as e:
+                                logger.error(f"Error processing detection {i}: {e}")
+                                continue
+                    else:
+                        logger.debug("No detections found in boxes.xyxy")
+                        
+                except Exception as e:
+                    logger.error(f"Error accessing detection data: {e}")
+            else:
+                logger.warning("⚠️ Boxes object missing required attributes (xyxy, cls, or conf)")
+                if not has_xyxy:
+                    logger.warning("  - Missing or None xyxy attribute")
+                if not has_cls:
+                    logger.warning("  - Missing or None cls attribute") 
+                if not has_conf:
+                    logger.warning("  - Missing or None conf attribute")
+        
+        # If boxes is None or no detections, try to access raw prediction data
+        if not bee_detected:
+            logger.info("🔄 Boxes is None or empty, trying to access raw prediction data...")
+            
+            # Try to access probs for classification-style results
+            if hasattr(result, 'probs') and result.probs is not None:
+                logger.info("📊 Found probs attribute - processing classification results")
+                try:
+                    probs = result.probs
+                    if hasattr(probs, 'data') and probs.data is not None:
+                        # Get class probabilities
+                        class_probs = probs.data.cpu().numpy() if hasattr(probs.data, 'cpu') else probs.data
+                        
+                        # Find marked_bee class (class 1)
+                        if len(class_probs) > 1:
+                            marked_bee_conf = class_probs[1]  # Class 1 = marked_bee
+                            logger.info(f"📊 Classification result: marked_bee confidence = {marked_bee_conf:.3f}")
+                            
+                            if marked_bee_conf > 0.3:  # Lower threshold for classification
+                                logger.info(f"📊 Classification detected marked_bee: confidence={marked_bee_conf:.3f}")
+                                
+                                # Try to find actual bee location using computer vision
+                                frame_height, frame_width = processed_frame.shape[:2]
+                                bee_location = find_bee_location_in_frame(processed_frame)
+                                
+                                if bee_location is not None:
+                                    # Only mark as detected if we actually found a bee in the frame
+                                    bee_detected = True
+                                    x_center, y_center = bee_location
+                                    logger.info(f"✅ MARKED BEE DETECTED via classification + CV: confidence={marked_bee_conf:.3f}, location=({x_center}, {y_center})")
+                                    
+                                    # Create a bounding box around estimated location
+                                    box_size = 100
+                                    x1 = max(0, x_center - box_size // 2)
+                                    y1 = max(0, y_center - box_size // 2)
+                                    x2 = min(frame_width, x_center + box_size // 2)
+                                    y2 = min(frame_height, y_center + box_size // 2)
+                                    
+                                    # Process the detection only if we found a real location
+                                    
+                                    # Process the detection
+                                    consecutive_inside = bee_state["consecutive_detections"]["inside"]
+                                    consecutive_outside = bee_state["consecutive_detections"]["outside"]
+                                    
+                                    bee_status, event_action = detect_sequence_pattern(x_center, y_center, current_time)
+                                    
+                                    # Add to position history
+                                    raw_status = "inside" if is_inside_hive(x_center, y_center) else "outside"
+                                    timestamp = current_time.timestamp()
+                                    bee_state["position_history"].append((x_center, y_center, timestamp, raw_status))
+                                    if len(bee_state["position_history"]) > POSITION_HISTORY_SIZE:
+                                        bee_state["position_history"] = bee_state["position_history"][-POSITION_HISTORY_SIZE:]
+                                    
+                                    logger.info(f"Bee position (classification): ({x_center}, {y_center}), Status: {bee_status}, Raw: {raw_status}, Event: {event_action}")
+                                    
+                                    # Draw visualization for classification result
+                                    color = (0, 255, 0) if raw_status == "inside" else (255, 165, 0)
+                                    cv2.rectangle(processed_frame, (x1, y1), (x2, y2), color, 3)
+                                    
+                                    # Draw crosshair at center
+                                    cv2.line(processed_frame, (x_center - 10, y_center), (x_center + 10, y_center), (255, 255, 255), 2)
+                                    cv2.line(processed_frame, (x_center, y_center - 10), (x_center, y_center + 10), (255, 255, 255), 2)
+                                    
+                                    # Draw info
+                                    info_texts = [
+                                        f"MARKED BEE (CLASSIFICATION) - {raw_status.upper()}",
+                                        f"Pos: ({x_center}, {y_center})",
+                                        f"Conf: {marked_bee_conf:.2f}",
+                                        f"Event: {'ACTIVE' if bee_state['event_active'] else 'INACTIVE'}",
+                                        f"Cons: I={consecutive_inside} O={consecutive_outside}"
+                                    ]
+                                    
+                                    y_offset = 50
+                                    for j, text in enumerate(info_texts):
+                                        cv2.putText(processed_frame, text, (x1, y_offset + j * 20),
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                                        cv2.putText(processed_frame, text, (x1, y_offset + j * 20),
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                                else:
+                                    # Classification says there's a bee, but CV couldn't find it
+                                    # Don't mark as detected - this prevents false center-screen detections
+                                    logger.debug(f"⚠️ Classification detected marked_bee (conf={marked_bee_conf:.3f}) but CV couldn't locate it in frame - no detection shown")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing classification results: {e}")
+            
+            # Try alternative formats if still no detection
+            if not bee_detected:
+                if hasattr(result, 'pred') and result.pred is not None:
+                    logger.info("🔄 Trying alternative format (pred attribute)")
+                    # Alternative format handling can be added here if needed
+                elif hasattr(result, 'pandas'):
+                    logger.info("🔄 Trying pandas format")
+                    # Pandas format handling
+                    try:
+                        df = result.pandas().xyxy[0]
+                        marked_bees = df[df['name'] == 'marked_bee']
+                        if len(marked_bees) > 0:
+                            logger.info(f"Found {len(marked_bees)} marked bees via pandas format")
+                            # Process pandas format detections here
+                    except Exception as e:
+                        logger.error(f"Pandas format processing failed: {e}")
+                else:
+                    logger.debug("No alternative detection formats available")
+    else:
+        logger.debug("No detection results or results format unexpected")
+
+
     # Always draw center line and bee path
     processed_frame = draw_center_line_info(processed_frame)
     processed_frame = draw_bee_path(processed_frame)
-    
-    if results_detect and len(results_detect) > 0 and hasattr(results_detect[0], 'boxes'):
-        boxes = results_detect[0].boxes.xyxy
-        
-        for box in boxes:
-            x1, y1, x2, y2 = map(int, box[:4])
-            cropped = processed_frame[y1:y2, x1:x2]
 
-            results_class = model_classify.predict(source=cropped, verbose=False)
-            
-            if len(results_class) > 0:
-                r = results_class[0]
-                if r.probs is not None:
-                    cls_id = int(r.probs.top1)
-                    cls_conf = float(r.probs.top1conf)
-                    cls_name = r.names[cls_id]
-                    
-                    logger.debug(f"All detections: class='{cls_name}', confidence={cls_conf:.3f}")
-                    
-                    is_marked_bee = (
-                        cls_name.lower() in ["marked_bee", "marked_bees"] and 
-                        cls_conf > 0.5
-                    )
-                    
-                    if is_marked_bee:
-                        bee_detected = True
-                        logger.info(f"Detection: class_name='{cls_name}', confidence={cls_conf:.3f}, is_marked_bee={is_marked_bee}")
-                        logger.info(f"Marked bee detected with confidence: {cls_conf:.2f}, class: '{cls_name}'")
-                        
-                        x_center = (x1 + x2) // 2
-                        y_center = (y1 + y2) // 2
-                        
-                        # Check if enough consecutive detections
-                        consecutive_inside = bee_state["consecutive_detections"]["inside"]
-                        consecutive_outside = bee_state["consecutive_detections"]["outside"]
-                        
-                        if consecutive_inside < MIN_CONSECUTIVE_DETECTIONS and consecutive_outside < MIN_CONSECUTIVE_DETECTIONS:
-                            logger.debug(f"Not enough consecutive detections: inside={consecutive_inside}, outside={consecutive_outside}")
-                        
-                        bee_status, event_action = detect_sequence_pattern(x_center, y_center, current_time)
-                        
-                        # Add to position history
-                        raw_status = "inside" if is_inside_hive(x_center, y_center) else "outside"
-                        timestamp = current_time.timestamp()
-                        bee_state["position_history"].append((x_center, y_center, timestamp, raw_status))
-                        if len(bee_state["position_history"]) > POSITION_HISTORY_SIZE:
-                            bee_state["position_history"] = bee_state["position_history"][-POSITION_HISTORY_SIZE:]
-                        
-                        logger.info(f"Bee position: ({x_center}, {y_center}), Status: {bee_status}, Raw: {raw_status}, Event: {event_action}")
-                        logger.info(f"Center line check: inside={is_inside_hive(x_center, y_center)}, Center_X={CENTER_LINE_X}")
-                        logger.info(f"Consecutive counts: inside={consecutive_inside}, outside={consecutive_outside}")
-                        logger.info(f"Sequence: {' → '.join(bee_state['status_sequence'][-5:]) if bee_state['status_sequence'] else 'Empty'}")
-                        
-                        # Store bee image for email notifications
-                        padding = 30
-                        x1_padded = max(0, x1 - padding)
-                        y1_padded = max(0, y1 - padding) 
-                        x2_padded = min(processed_frame.shape[1], x2 + padding)
-                        y2_padded = min(processed_frame.shape[0], y2 + padding)
-                        
-                        bee_image = processed_frame[y1_padded:y2_padded, x1_padded:x2_padded].copy()
-                        
-                        if not hasattr(process_frame, 'last_bee_image'):
-                            process_frame.last_bee_image = None
-                        process_frame.last_bee_image = bee_image
-                        
-                        # Draw bee visualization
-                        color = (0, 255, 0) if raw_status == "inside" else (255, 165, 0)
-                        cv2.rectangle(processed_frame, (x1, y1), (x2, y2), color, 3)
-                        
-                        # Draw crosshair at center
-                        cv2.line(processed_frame, (x_center - 10, y_center), (x_center + 10, y_center), (255, 255, 255), 2)
-                        cv2.line(processed_frame, (x_center, y_center - 10), (x_center, y_center + 10), (255, 255, 255), 2)
-                        
-                        # Draw info
-                        info_texts = [
-                            f"MARKED BEE - {raw_status.upper()}",
-                            f"Pos: ({x_center}, {y_center})",
-                            f"Conf: {cls_conf:.2f}",
-                            f"Event: {'ACTIVE' if bee_state['event_active'] else 'INACTIVE'}",
-                            f"Cons: I={consecutive_inside} O={consecutive_outside}"
-                        ]
-                        
-                        y_offset = max(50, y1 - 120)
-                        for i, text in enumerate(info_texts):
-                            cv2.putText(processed_frame, text, (x1, y_offset + i * 20),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                            cv2.putText(processed_frame, text, (x1, y_offset + i * 20),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-                        
-                        break
-    
     # Add enhanced status information to the frame
     last_status = bee_state["status_sequence"][-1] if bee_state["status_sequence"] else None
     
@@ -581,27 +845,30 @@ async def get_bee_tracking_debug_status():
 
 @router.get("/debug/model-info")
 async def get_model_info():
-    """Return information about the classification model and available classes"""
-    if model_detect is None or model_classify is None:
-        return {"error": "Models not loaded", "models_loaded": False}
+    """Return information about the unified detection model and available classes"""
+    if model_detect is None:
+        return {"error": "Model not loaded", "models_loaded": False}
     
     try:
-        class_names = model_classify.names if hasattr(model_classify, 'names') else "Not available"
+        class_names = model_detect.names if hasattr(model_detect, 'names') else "Not available"
         
         return {
             "models_loaded": True,
-            "classification_model": {
+            "unified_model": {
                 "model_file": "best.pt",
                 "class_names": class_names,
-                "available_classes": list(class_names.values()) if isinstance(class_names, dict) else class_names
-            },
-            "detection_model": {
-                "model_file": "yolov8n.pt"
+                "available_classes": list(class_names.values()) if isinstance(class_names, dict) else class_names,
+                "description": "Unified detection and classification model",
+                "expected_classes": {
+                    "0": "regular_bee",
+                    "1": "marked_bee"
+                }
             },
             "center_line_x": CENTER_LINE_X,
             "frame_dimensions": f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
             "detection_threshold": 0.5,
-            "position_history_size": POSITION_HISTORY_SIZE
+            "position_history_size": POSITION_HISTORY_SIZE,
+            "marked_bee_class_id": 1  # We only track class 1 (marked_bee)
         }
     except Exception as e:
         return {"error": str(e), "models_loaded": False}
@@ -610,6 +877,16 @@ async def get_model_info():
 async def live_stream(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connected")
+    
+    # Reset bee tracking state on new connection
+    logger.info("🔄 Resetting bee tracking state for new connection")
+    bee_state["current_status"] = None
+    bee_state["status_sequence"] = []
+    bee_state["consecutive_detections"] = {"inside": 0, "outside": 0}
+    bee_state["event_active"] = False
+    bee_state["current_event_id"] = None
+    bee_state["position_history"] = []
+    logger.info("✅ Bee tracking state reset complete")
 
     timestamp = int(time.time())
     temp_videos_dir = f"{VIDEOS_DIR}/temp_videos"
