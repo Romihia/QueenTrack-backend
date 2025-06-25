@@ -21,7 +21,7 @@ import threading
 from pydantic import BaseModel
 import logging
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Configure logging
 logging.basicConfig(
@@ -78,6 +78,7 @@ class ProcessingSettings(BaseModel):
     email_notifications_enabled: bool = True
     email_on_exit: bool = True
     email_on_entrance: bool = True
+    notification_email: Optional[str] = None
 
 class SystemSettings(BaseModel):
     processing: ProcessingSettings = ProcessingSettings()
@@ -585,6 +586,19 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                     
             except Exception as e:
                 logger.error(f"💥 Error sending event start email notification: {str(e)}")
+        
+        # Send WebSocket notification
+        try:
+            await send_notification_to_clients(
+                event_type="exit",
+                timestamp=current_time,
+                additional_data={
+                    'event_id': bee_state.get("current_event_id"),
+                    'status': 'event_started'
+                }
+            )
+        except Exception as e:
+            logger.error(f"WebSocket notification error: {e}")
             
     elif event_action == "end_event":
         logger.warning(f"🏠 [{current_time}] EVENT ENDED: Bee returned to hive")
@@ -635,6 +649,19 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                     
             except Exception as e:
                 logger.error(f"💥 Error sending event end email notification: {str(e)}")
+        
+        # Send WebSocket notification
+        try:
+            await send_notification_to_clients(
+                event_type="entrance",
+                timestamp=current_time,
+                additional_data={
+                    'event_id': current_event_id,
+                    'status': 'event_ended'
+                }
+            )
+        except Exception as e:
+            logger.error(f"WebSocket notification error: {e}")
 
 @router.post("/camera-config")
 async def set_camera_config(config: CameraConfig):
@@ -787,6 +814,15 @@ async def live_stream(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info("🔌 WebSocket disconnected")
         
+        # טיפול בסיום אירוע כשמפסיקים את הlive stream
+        if bee_state.get("event_active") and bee_state.get("current_event_id"):
+            logger.warning("⚠️ Live stream disconnected during active event - finishing event")
+            try:
+                await handle_bee_event("end_event", "inside", datetime.now())
+                logger.info("✅ Event completed due to stream disconnection")
+            except Exception as e:
+                logger.error(f"❌ Error finishing event on disconnect: {e}")
+        
         # Clean up videos if enabled
         if current_settings.processing.auto_delete_videos_after_session:
             try:
@@ -844,25 +880,46 @@ async def cleanup_session_videos():
 
 @router.post("/settings")
 async def update_settings(settings: SystemSettings):
-    """Update system settings"""
+    """Update system settings and save to MongoDB"""
     global current_settings
     try:
+        # Save to MongoDB
+        from app.schemas.schema import SystemSettingsCreate, CameraSettings
+        from app.services.service import create_or_update_system_settings
+        
+        settings_data = SystemSettingsCreate(
+            processing=settings.processing,
+            camera=CameraSettings(
+                internal_camera_id=settings.camera_config["internal_camera_id"],
+                external_camera_id=settings.camera_config["external_camera_id"]
+            )
+        )
+        
+        saved_settings = await create_or_update_system_settings(settings_data)
         current_settings = settings
+        
+        # Update camera config globally
+        camera_config["internal_camera_id"] = settings.camera_config["internal_camera_id"]
+        camera_config["external_camera_id"] = settings.camera_config["external_camera_id"]
+        
+        # Update video recording service
+        video_recording_service.set_external_camera_config(settings.camera_config["external_camera_id"])
         
         # Update bee tracking service configuration
         bee_tracking_service.state["consecutive_detections"] = {
             "inside": 0, "outside": 0
         }
         
-        logger.info("✅ System settings updated successfully")
+        logger.info("✅ System settings updated and saved to MongoDB successfully")
         logger.info(f"Detection enabled: {settings.processing.detection_enabled}")
-        logger.info(f"Drawing settings: path={settings.processing.draw_bee_path}, center_line={settings.processing.draw_center_line}")
-        logger.info(f"Video settings: auto_delete={settings.processing.auto_delete_videos_after_session}")
+        logger.info(f"Email settings: enabled={settings.processing.email_notifications_enabled}, email={getattr(settings.processing, 'notification_email', 'Not set')}")
+        logger.info(f"Camera settings: Internal={settings.camera_config['internal_camera_id']}, External={settings.camera_config['external_camera_id']}")
         
         return {
             "status": "success",
-            "message": "Settings updated successfully",
-            "settings": current_settings.dict()
+            "message": "Settings updated and saved successfully",
+            "settings": current_settings.dict(),
+            "settings_id": saved_settings.id
         }
     except Exception as e:
         logger.error(f"Failed to update settings: {e}")
@@ -870,11 +927,37 @@ async def update_settings(settings: SystemSettings):
 
 @router.get("/settings")
 async def get_settings():
-    """Get current system settings"""
-    return {
-        "status": "success",
-        "settings": current_settings.dict()
-    }
+    """Get current system settings from MongoDB"""
+    try:
+        from app.services.service import get_system_settings
+        
+        saved_settings = await get_system_settings()
+        
+        if saved_settings:
+            return {
+                "status": "success",
+                "settings": {
+                    "processing": saved_settings.processing.dict(),
+                    "camera_config": saved_settings.camera.dict()
+                },
+                "saved_at": saved_settings.updated_at.isoformat() if saved_settings.updated_at else None
+            }
+        else:
+            # Return default settings if none saved
+            return {
+                "status": "success",
+                "settings": current_settings.dict(),
+                "saved_at": None,
+                "message": "Using default settings (none saved in database)"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error getting settings from MongoDB: {e}")
+        return {
+            "status": "success",
+            "settings": current_settings.dict(),
+            "error": f"Failed to load from database: {str(e)}"
+        }
 
 @router.post("/settings/reset")
 async def reset_settings():
@@ -1258,4 +1341,62 @@ async def batch_convert_events():
         
     except Exception as e:
         logger.error(f"Batch conversion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Global list to store connected notification clients
+notification_clients = []
+
+@router.websocket("/notifications")
+async def notifications_websocket(websocket: WebSocket):
+    """WebSocket endpoint להתרעות בזמן אמת"""
+    await websocket.accept()
+    notification_clients.append(websocket)
+    logger.info(f"New notification client connected. Total clients: {len(notification_clients)}")
+    
+    try:
+        while True:
+            # Keep connection alive - receive heartbeat messages
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # Echo back heartbeat
+                await websocket.send_text('{"status": "alive"}')
+            except asyncio.TimeoutError:
+                # Send heartbeat if no message received
+                await websocket.send_text('{"status": "heartbeat"}')
+    except WebSocketDisconnect:
+        if websocket in notification_clients:
+            notification_clients.remove(websocket)
+        logger.info(f"Notification client disconnected. Total clients: {len(notification_clients)}")
+    except Exception as e:
+        logger.error(f"Error in notifications websocket: {e}")
+        if websocket in notification_clients:
+            notification_clients.remove(websocket)
+
+async def send_notification_to_clients(event_type: str, timestamp: datetime, additional_data: dict = None):
+    """שליחת התרעה לכל הלקוחות המחוברים"""
+    if not notification_clients:
+        return
+    
+    notification_data = {
+        "type": "bee_notification",
+        "event_type": event_type,  # 'exit' או 'entrance'
+        "timestamp": timestamp.isoformat(),
+        "message": f"דבורה מסומנת {'יצאה מהכוורת' if event_type == 'exit' else 'חזרה לכוורת'}",
+        "additional_data": additional_data or {}
+    }
+    
+    # שליחה לכל הלקוחות המחוברים
+    disconnected_clients = []
+    for client in notification_clients:
+        try:
+            await client.send_text(json.dumps(notification_data, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"Failed to send notification to client: {e}")
+            disconnected_clients.append(client)
+    
+    # הסרת לקוחות מנותקים
+    for client in disconnected_clients:
+        if client in notification_clients:
+            notification_clients.remove(client)
+    
+    logger.info(f"Notification sent to {len(notification_clients)} clients") 
