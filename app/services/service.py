@@ -5,11 +5,13 @@ from datetime import datetime
 from app.core.database import db
 from app.schemas.schema import (
     EventCreate, EventUpdate, EventDB,
-    SystemSettingsCreate, SystemSettingsUpdate, SystemSettingsDB
+    SystemSettingsCreate, SystemSettingsUpdate, SystemSettingsDB,
+    NotificationCreate, NotificationUpdate, NotificationDB
 )
 
 COLLECTION_NAME = "events"
 SETTINGS_COLLECTION_NAME = "system_settings"
+NOTIFICATIONS_COLLECTION_NAME = "notifications"
 
 async def create_event(event_data: EventCreate) -> EventDB:
     doc = event_data.dict()
@@ -99,4 +101,141 @@ async def delete_system_settings() -> bool:
         result = await db[SETTINGS_COLLECTION_NAME].delete_many({})
         return result.deleted_count > 0
     except Exception:
+        return False
+
+# Notifications functions
+async def create_notification(notification_data: NotificationCreate) -> NotificationDB:
+    """יצירת התרעה חדשה"""
+    try:
+        doc = notification_data.dict()
+        doc["created_at"] = datetime.now()
+        result = await db[NOTIFICATIONS_COLLECTION_NAME].insert_one(doc)
+        doc["_id"] = str(result.inserted_id)
+        return NotificationDB(**doc)
+    except Exception as e:
+        raise Exception(f"Failed to create notification: {str(e)}")
+
+async def get_all_notifications(limit: int = 50) -> List[NotificationDB]:
+    """קבלת כל ההתרעות (מוגבל ל-50 אחרונות)"""
+    try:
+        cursor = db[NOTIFICATIONS_COLLECTION_NAME].find({}).sort("timestamp", -1).limit(limit)
+        notifications = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            notifications.append(NotificationDB(**doc))
+        return notifications
+    except Exception:
+        return []
+
+async def get_unread_notifications_count() -> int:
+    """קבלת מספר ההתרעות שלא נקראו"""
+    try:
+        count = await db[NOTIFICATIONS_COLLECTION_NAME].count_documents({"read": False})
+        return count
+    except Exception:
+        return 0
+
+async def mark_all_notifications_read() -> bool:
+    """סימון כל ההתרעות כנקראו"""
+    try:
+        result = await db[NOTIFICATIONS_COLLECTION_NAME].update_many(
+            {"read": False},
+            {"$set": {"read": True}}
+        )
+        return True
+    except Exception:
+        return False
+
+async def delete_all_notifications() -> bool:
+    """מחיקת כל ההתרעות"""
+    try:
+        result = await db[NOTIFICATIONS_COLLECTION_NAME].delete_many({})
+        return result.deleted_count > 0
+    except Exception:
+        return False
+
+async def delete_notification(notification_id: str) -> bool:
+    """מחיקת התרעה ספציפית"""
+    try:
+        result = await db[NOTIFICATIONS_COLLECTION_NAME].delete_one({"_id": ObjectId(notification_id)})
+        return result.deleted_count > 0
+    except Exception:
+        return False
+
+# Enhanced event functions
+async def delete_event_with_videos(event_id: str) -> bool:
+    """מחיקת אירוע כולל הווידאו הקשור אליו"""
+    try:
+        import os
+        import glob
+        
+        # Get event details first
+        event = await get_event_by_id(event_id)
+        if not event:
+            return False
+        
+        # Collect all video paths to delete
+        video_paths_to_delete = []
+        
+        # Original videos
+        if event.internal_video_url:
+            # Convert URL to file path
+            video_path = event.internal_video_url.replace("/videos/", "/data/videos/")
+            if os.path.exists(video_path):
+                video_paths_to_delete.append(video_path)
+        
+        if event.external_video_url:
+            video_path = event.external_video_url.replace("/videos/", "/data/videos/")
+            if os.path.exists(video_path):
+                video_paths_to_delete.append(video_path)
+        
+        # Converted videos
+        if event.internal_video_url_converted:
+            video_path = event.internal_video_url_converted.replace("/videos/", "/data/videos/")
+            if os.path.exists(video_path):
+                video_paths_to_delete.append(video_path)
+        
+        if event.external_video_url_converted:
+            video_path = event.external_video_url_converted.replace("/videos/", "/data/videos/")
+            if os.path.exists(video_path):
+                video_paths_to_delete.append(video_path)
+        
+        # Try to find event directory and delete all videos in it
+        event_dir_pattern = f"/data/videos/events/*{event_id}*"
+        event_directories = glob.glob(event_dir_pattern)
+        
+        for event_dir in event_directories:
+            if os.path.exists(event_dir):
+                video_files = glob.glob(os.path.join(event_dir, "*.mp4"))
+                video_paths_to_delete.extend(video_files)
+        
+        # Delete all video files
+        deleted_videos = []
+        for video_path in video_paths_to_delete:
+            try:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                    deleted_videos.append(video_path)
+            except Exception as e:
+                print(f"Failed to delete video {video_path}: {e}")
+        
+        # Delete event directories if empty
+        for event_dir in event_directories:
+            try:
+                if os.path.exists(event_dir) and not os.listdir(event_dir):
+                    os.rmdir(event_dir)
+            except Exception as e:
+                print(f"Failed to delete directory {event_dir}: {e}")
+        
+        # Delete from database
+        result = await db[COLLECTION_NAME].delete_one({"_id": ObjectId(event_id)})
+        
+        if result.deleted_count > 0:
+            print(f"Event {event_id} deleted successfully. Deleted videos: {deleted_videos}")
+            return True
+        else:
+            return False
+            
+    except Exception as e:
+        print(f"Error deleting event {event_id}: {e}")
         return False

@@ -1373,15 +1373,41 @@ async def notifications_websocket(websocket: WebSocket):
             notification_clients.remove(websocket)
 
 async def send_notification_to_clients(event_type: str, timestamp: datetime, additional_data: dict = None):
-    """שליחת התרעה לכל הלקוחות המחוברים"""
+    """שליחת התרעה לכל הלקוחות המחוברים ושמירה במונגו"""
     if not notification_clients:
-        return
+        logger.info("No notification clients connected")
     
+    # הכנת הודעת התרעה
+    message = (
+        "דבורה מסומנת יצאה מהכוורת 🐝➡️" if event_type == "exit" 
+        else "דבורה מסומנת חזרה לכוורת 🐝⬅️"
+    )
+    
+    # שמירה במונגו
+    try:
+        from app.schemas.schema import NotificationCreate
+        from app.services.service import create_notification
+        
+        notification_data = NotificationCreate(
+            event_type=event_type,
+            message=message,
+            timestamp=timestamp,
+            read=False,
+            additional_data=additional_data or {}
+        )
+        
+        saved_notification = await create_notification(notification_data)
+        logger.info(f"Notification saved to MongoDB with ID: {saved_notification.id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to save notification to MongoDB: {e}")
+    
+    # שליחה ל-WebSocket clients
     notification_data = {
         "type": "bee_notification",
-        "event_type": event_type,  # 'exit' או 'entrance'
+        "event_type": event_type,
+        "message": message,
         "timestamp": timestamp.isoformat(),
-        "message": f"דבורה מסומנת {'יצאה מהכוורת' if event_type == 'exit' else 'חזרה לכוורת'}",
         "additional_data": additional_data or {}
     }
     
@@ -1399,4 +1425,83 @@ async def send_notification_to_clients(event_type: str, timestamp: datetime, add
         if client in notification_clients:
             notification_clients.remove(client)
     
-    logger.info(f"Notification sent to {len(notification_clients)} clients") 
+    logger.info(f"Notification '{message}' sent to {len(notification_clients)} clients and saved to MongoDB")
+
+# Notifications endpoints
+@router.get("/notifications")
+async def get_notifications():
+    """קבלת כל ההתרעות"""
+    try:
+        from app.services.service import get_all_notifications
+        notifications = await get_all_notifications()
+        return {
+            "status": "success",
+            "notifications": [notif.dict() for notif in notifications]
+        }
+    except Exception as e:
+        logger.error(f"Error getting notifications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/notifications/count")
+async def get_unread_notifications_count():
+    """קבלת מספר ההתרעות שלא נקראו"""
+    try:
+        from app.services.service import get_unread_notifications_count
+        count = await get_unread_notifications_count()
+        return {
+            "status": "success",
+            "unread_count": count
+        }
+    except Exception as e:
+        logger.error(f"Error getting unread count: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/notifications/mark-all-read")
+async def mark_all_notifications_read():
+    """סימון כל ההתרעות כנקראו"""
+    try:
+        from app.services.service import mark_all_notifications_read
+        success = await mark_all_notifications_read()
+        return {
+            "status": "success" if success else "error",
+            "message": "All notifications marked as read" if success else "Failed to mark notifications as read"
+        }
+    except Exception as e:
+        logger.error(f"Error marking notifications as read: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/notifications")
+async def delete_all_notifications():
+    """מחיקת כל ההתרעות"""
+    try:
+        from app.services.service import delete_all_notifications
+        success = await delete_all_notifications()
+        return {
+            "status": "success" if success else "error",
+            "message": "All notifications deleted" if success else "Failed to delete notifications"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting notifications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/events/{event_id}")
+async def delete_event_endpoint(event_id: str):
+    """מחיקת אירוע כולל הווידאו הקשור אליו"""
+    try:
+        from app.services.service import delete_event_with_videos
+        success = await delete_event_with_videos(event_id)
+        
+        if success:
+            logger.info(f"Event {event_id} and related videos deleted successfully")
+            return {
+                "status": "success",
+                "message": f"Event {event_id} and related videos deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Event not found or could not be deleted")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

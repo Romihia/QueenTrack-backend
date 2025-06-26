@@ -121,3 +121,29 @@ class SystemSettingsDB(BaseModel):
 
     class Config:
         populate_by_name = True
+
+# Notifications Schemas for MongoDB
+
+class NotificationBase(BaseModel):
+    """התרעה בסיסית"""
+    event_type: str  # 'exit' או 'entrance'
+    message: str
+    timestamp: datetime
+    read: bool = False
+    additional_data: Optional[Dict[str, Any]] = None
+
+class NotificationCreate(NotificationBase):
+    """ליצירת התרעה חדשה"""
+    pass
+
+class NotificationUpdate(BaseModel):
+    """לעדכון התרעה"""
+    read: Optional[bool] = None
+
+class NotificationDB(NotificationBase):
+    """התרעה כפי שהיא נשמרת במונגו"""
+    id: Optional[str] = Field(None, alias="_id")
+    created_at: Optional[datetime] = None
+
+    class Config:
+        populate_by_name = True
