@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - stage
-      - main
+    branches: [main, stage]
+  pull_request:
+    branches: [main, stage]
 
 jobs:
   # Job לבדיקות ו-Docker
