@@ -67,3 +67,6 @@ Thumbs.db
 *.bak
 *.backup
 *.old
+
+fix-websocket-issue.ps1
+websocket-cors-fix.py
