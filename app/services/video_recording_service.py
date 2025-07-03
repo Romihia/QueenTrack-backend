@@ -123,6 +123,14 @@ class VideoRecordingService:
         self.internal_output_path = None
         self.external_output_path = None
         
+        # Reset WebSocket external mode flags
+        if hasattr(self, '_websocket_external_mode'):
+            delattr(self, '_websocket_external_mode')
+        if hasattr(self, '_websocket_frame_count'):
+            frame_count = self._websocket_frame_count
+            delattr(self, '_websocket_frame_count')
+            logger.info(f"📹 External WebSocket recording finished: {frame_count} total frames")
+        
         logger.info(f"🛑 Event recording stopped")
         
         # Trigger video conversion in background if callback is set
@@ -209,13 +217,26 @@ class VideoRecordingService:
             if not self.external_writer.isOpened():
                 raise Exception("Failed to open external video writer")
             
-            # Start external camera thread
-            self.stop_external = False
-            self.external_thread = threading.Thread(target=self._external_recording_thread)
-            self.external_thread.daemon = True
-            self.external_thread.start()
+            # Check if camera config is a WebRTC device ID (long hex string)
+            # WebRTC device IDs are typically 64 character hex strings
+            is_webrtc_device = (
+                len(self.external_camera_config) > 20 and 
+                all(c in '0123456789abcdef' for c in self.external_camera_config.lower())
+            )
             
-            logger.info("✅ External recording started")
+            if is_webrtc_device:
+                # WebRTC device - wait for WebSocket stream, don't try direct camera access
+                logger.info(f"🌐 External camera is WebRTC device ({self.external_camera_config[:8]}...) - waiting for WebSocket stream")
+                logger.info("✅ External recording initialized - WebSocket mode")
+                # Don't start a thread, just wait for WebSocket frames via add_external_camera_frame()
+            else:
+                # System camera - try direct access
+                logger.info(f"📹 External camera is system device ({self.external_camera_config}) - starting direct capture")
+                self.stop_external = False
+                self.external_thread = threading.Thread(target=self._external_recording_thread)
+                self.external_thread.daemon = True
+                self.external_thread.start()
+                logger.info("✅ External recording started - Direct camera mode")
             
         except Exception as e:
             logger.error(f"Failed to start external recording: {e}")
@@ -305,6 +326,20 @@ class VideoRecordingService:
         
         logger.info(f"Mock external recording finished. Frames: {frame_count}")
     
+    def _stop_external_recording_thread(self):
+        """עצור את thread ההקלטה החיצונית בלבד (משאיר את הwriter פתוח)"""
+        self.stop_external = True
+        
+        if self.external_thread:
+            self.external_thread.join(timeout=5.0)
+            self.external_thread = None
+        
+        if self.external_capture:
+            self.external_capture.release()
+            self.external_capture = None
+        
+        logger.info("🛑 External recording thread stopped (WebSocket mode)")
+
     def _stop_external_recording(self):
         """עצור הקלטה חיצונית"""
         self.stop_external = True
@@ -331,6 +366,34 @@ class VideoRecordingService:
         # If event recording is active, also write to internal video
         if self.is_event_recording and self.internal_writer:
             self.internal_writer.write(frame)
+    
+    def add_external_camera_frame(self, frame: np.ndarray):
+        """הוסף פריים מהמצלמה החיצונית להקלטה (במקום השימוש בthread נפרד)"""
+        # Only write external frames if event recording is active and external writer exists
+        if self.is_event_recording and self.external_writer:
+            # Check if this is the first WebSocket frame received
+            if not hasattr(self, '_websocket_external_mode'):
+                self._websocket_external_mode = True
+                # Stop any direct camera thread if it's running
+                if self.external_thread and self.external_thread.is_alive():
+                    self._stop_external_recording_thread()
+                    logger.info("🔄 Switched external camera from direct capture to WebSocket mode")
+                else:
+                    logger.info("📡 External camera WebSocket stream started - receiving frames")
+                
+                # Track frame count for logging
+                self._websocket_frame_count = 0
+            
+            # Resize frame to match expected external video dimensions if needed
+            if frame.shape[:2] != (480, 640):  # height, width
+                frame = cv2.resize(frame, (640, 480))
+            
+            self.external_writer.write(frame)
+            self._websocket_frame_count += 1
+            
+            # Log every 100 frames to show progress
+            if self._websocket_frame_count % 100 == 0:
+                logger.info(f"📹 External WebSocket recording: {self._websocket_frame_count} frames received")
     
     def get_status(self) -> Dict[str, Any]:
         """קבל סטטוס נוכחי של ההקלטה"""
