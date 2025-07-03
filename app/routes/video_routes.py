@@ -535,6 +535,9 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
     if event_action == "start_event":
         logger.warning(f"🚪 [{current_time}] EVENT STARTED: Bee exited after entering")
         
+        # Send external camera activation signal
+        await send_external_camera_activation(True)
+        
         try:
             event_data = EventCreate(
                 time_out=current_time,
@@ -561,7 +564,7 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         except Exception as e:
             logger.error(f"💥 Error creating event: {str(e)}")
         
-        # Send email notification if enabled
+        # Send email notification if enabled (with timeout to prevent blocking)
         if current_settings.processing.email_notifications_enabled and current_settings.processing.email_on_exit:
             try:
                 additional_info = {
@@ -572,11 +575,16 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                     "sequence_description": "Bee crossed from inside hive to outside area"
                 }
                 
-                email_success = email_service.send_bee_detection_notification(
-                    event_type="exit",
-                    timestamp=current_time,
-                    bee_image=bee_image,
-                    additional_info=additional_info
+                # Use asyncio.wait_for with timeout to prevent hanging
+                email_success = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        email_service.send_bee_detection_notification,
+                        event_type="exit",
+                        timestamp=current_time,
+                        bee_image=bee_image,
+                        additional_info=additional_info
+                    ),
+                    timeout=10.0  # 10 second timeout
                 )
                 
                 if email_success:
@@ -584,6 +592,8 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                 else:
                     logger.error("❌ Failed to send event start notification email")
                     
+            except asyncio.TimeoutError:
+                logger.error("⏰ Email notification timed out after 10 seconds")
             except Exception as e:
                 logger.error(f"💥 Error sending event start email notification: {str(e)}")
         
@@ -594,7 +604,8 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                 timestamp=current_time,
                 additional_data={
                     'event_id': bee_state.get("current_event_id"),
-                    'status': 'event_started'
+                    'status': 'event_started',
+                    'external_camera_activated': True
                 }
             )
         except Exception as e:
@@ -602,6 +613,9 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
             
     elif event_action == "end_event":
         logger.warning(f"🏠 [{current_time}] EVENT ENDED: Bee returned to hive")
+        
+        # Send external camera deactivation signal
+        await send_external_camera_activation(False)
         
         try:
             current_event_id = bee_state["current_event_id"]
@@ -624,7 +638,7 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         except Exception as e:
             logger.error(f"💥 Error updating event: {str(e)}")
         
-        # Send email notification for bee entrance if enabled
+        # Send email notification for bee entrance if enabled (with timeout to prevent blocking)
         if current_settings.processing.email_notifications_enabled and current_settings.processing.email_on_entrance:
             try:
                 additional_info = {
@@ -635,11 +649,16 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                     "sequence_description": "Bee returned from outside to inside hive"
                 }
                 
-                email_success = email_service.send_bee_detection_notification(
-                    event_type="entrance",
-                    timestamp=current_time,
-                    bee_image=bee_image,
-                    additional_info=additional_info
+                # Use asyncio.wait_for with timeout to prevent hanging
+                email_success = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        email_service.send_bee_detection_notification,
+                        event_type="entrance",
+                        timestamp=current_time,
+                        bee_image=bee_image,
+                        additional_info=additional_info
+                    ),
+                    timeout=10.0  # 10 second timeout
                 )
                 
                 if email_success:
@@ -647,6 +666,8 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                 else:
                     logger.error("❌ Failed to send event end notification email")
                     
+            except asyncio.TimeoutError:
+                logger.error("⏰ Email notification timed out after 10 seconds")
             except Exception as e:
                 logger.error(f"💥 Error sending event end email notification: {str(e)}")
         
@@ -657,7 +678,8 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
                 timestamp=current_time,
                 additional_data={
                     'event_id': current_event_id,
-                    'status': 'event_ended'
+                    'status': 'event_ended',
+                    'external_camera_deactivated': True
                 }
             )
         except Exception as e:
@@ -752,8 +774,14 @@ async def get_model_info():
 
 @router.websocket("/live-stream")
 async def live_stream(websocket: WebSocket):
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"🔌 [WebSocket DEBUG] live-stream connection attempt from {client_ip}")
+    logger.info(f"🔌 [WebSocket DEBUG] Headers: {dict(websocket.headers)}")
+    logger.info(f"🔌 [WebSocket DEBUG] Query params: {dict(websocket.query_params)}")
+    logger.info(f"🔌 [WebSocket DEBUG] Scope: {websocket.scope.get('path', 'no path')}")
+    
     await websocket.accept()
-    logger.info("🔌 WebSocket connection established")
+    logger.info(f"✅ [WebSocket DEBUG] live-stream connection established from {client_ip}")
     
     # Reset tracking state on new connection
     bee_tracking_service.reset_state()
@@ -784,7 +812,10 @@ async def live_stream(websocket: WebSocket):
                 status, event_action = detect_sequence_pattern(bee_x, bee_y, current_time)
                 
                 if event_action:
-                    await handle_bee_event(event_action, bee_status, current_time, processed_frame)
+                    # Run event handling in background to avoid blocking WebSocket
+                    import asyncio
+                    asyncio.create_task(handle_bee_event(event_action, bee_status, current_time, processed_frame))
+                    logger.info(f"🚀 Event handling started in background: {event_action}")
             
             # Encode and send processed frame
             _, buffer = cv2.imencode('.jpg', processed_frame, 
@@ -1349,9 +1380,15 @@ notification_clients = []
 @router.websocket("/notifications")
 async def notifications_websocket(websocket: WebSocket):
     """WebSocket endpoint להתרעות בזמן אמת"""
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"🔔 [WebSocket DEBUG] notifications connection attempt from {client_ip}")
+    logger.info(f"🔔 [WebSocket DEBUG] Headers: {dict(websocket.headers)}")
+    logger.info(f"🔔 [WebSocket DEBUG] Query params: {dict(websocket.query_params)}")
+    logger.info(f"🔔 [WebSocket DEBUG] Scope: {websocket.scope.get('path', 'no path')}")
+    
     await websocket.accept()
     notification_clients.append(websocket)
-    logger.info(f"New notification client connected. Total clients: {len(notification_clients)}")
+    logger.info(f"✅ [WebSocket DEBUG] notification client connected from {client_ip}. Total clients: {len(notification_clients)}")
     
     try:
         while True:
@@ -1504,4 +1541,91 @@ async def delete_event_endpoint(event_id: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.websocket("/external-camera-stream")
+async def external_camera_stream(websocket: WebSocket):
+    """WebSocket endpoint for external camera - simple recording only"""
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"🔌 [External Camera WebSocket] Connection attempt from {client_ip}")
+    
+    await websocket.accept()
+    logger.info(f"✅ [External Camera WebSocket] Connection established from {client_ip}")
+    
+    try:
+        while True:
+            # Receive frame data from external camera
+            data = await websocket.receive_bytes()
+            
+            # Convert bytes to numpy array
+            nparr = np.frombuffer(data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if frame is None:
+                logger.warning("Invalid frame received from external camera")
+                continue
+            
+            # Add simple timestamp and camera identification (NO PROCESSING)
+            current_time = datetime.now()
+            timestamp_text = f"External Camera - {current_time.strftime('%H:%M:%S.%f')[:-3]}"
+            cv2.putText(frame, timestamp_text, (20, 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            
+            # Add camera identifier
+            cv2.putText(frame, "EXTERNAL TRACKING ACTIVE", (20, frame.shape[0] - 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Add recording indicator if recording
+            if video_recording_service.is_event_recording:
+                cv2.putText(frame, "● REC", (frame.shape[1] - 100, 50),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            
+            # Save to video recording service (NO DETECTION/PROCESSING)
+            if video_recording_service.is_event_recording:
+                video_recording_service.add_external_camera_frame(frame)
+            
+            # Encode and send frame back to frontend for display
+            _, buffer = cv2.imencode('.jpg', frame, 
+                                   [cv2.IMWRITE_JPEG_QUALITY, 80])
+            
+            # Send simple status update
+            status_update = {
+                "camera_type": "external",
+                "timestamp": current_time.isoformat(),
+                "recording_status": video_recording_service.is_event_recording,
+                "current_event_id": video_recording_service.current_event_id
+            }
+            
+            await websocket.send_text(json.dumps(status_update))
+            await websocket.send_bytes(buffer.tobytes())
+            
+    except WebSocketDisconnect:
+        logger.info("🔌 External camera WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"External camera WebSocket error: {e}")
+    finally:
+        logger.info("🔌 External camera WebSocket connection closed")
+
+async def send_external_camera_activation(activate: bool):
+    """Send external camera activation/deactivation message to all connected clients"""
+    message = {
+        "type": "external_camera_control",
+        "action": "activate" if activate else "deactivate",
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Send to notification clients
+    disconnected_clients = []
+    for client in notification_clients:
+        try:
+            await client.send_text(json.dumps(message, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"Failed to send external camera control to client: {e}")
+            disconnected_clients.append(client)
+    
+    # Remove disconnected clients
+    for client in disconnected_clients:
+        if client in notification_clients:
+            notification_clients.remove(client)
+    
+    logger.info(f"External camera control sent: {message['action']} to {len(notification_clients)} clients") 
