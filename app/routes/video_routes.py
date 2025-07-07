@@ -22,6 +22,8 @@ from pydantic import BaseModel
 import logging
 import asyncio
 from typing import Dict, Any, Optional
+from app.services.camera_session_manager import camera_session_manager
+from app.services.camera_synchronizer import CameraSynchronizer
 
 # Configure logging
 logging.basicConfig(
@@ -1628,4 +1630,312 @@ async def send_external_camera_activation(activate: bool):
         if client in notification_clients:
             notification_clients.remove(client)
     
-    logger.info(f"External camera control sent: {message['action']} to {len(notification_clients)} clients") 
+    logger.info(f"External camera control sent: {message['action']} to {len(notification_clients)} clients")
+
+@router.post("/create-session")
+async def create_camera_session(session_data: dict):
+    """Create a new dual camera session"""
+    try:
+        internal_camera_id = session_data.get("internal_camera_id")
+        external_camera_id = session_data.get("external_camera_id")
+        
+        if not internal_camera_id or not external_camera_id:
+            raise HTTPException(status_code=400, detail="Both internal and external camera IDs required")
+        
+        # Import session manager here to avoid circular imports
+        from app.services.camera_session_manager import camera_session_manager
+        
+        session = camera_session_manager.create_session(internal_camera_id, external_camera_id)
+        
+        if session:
+            return {
+                "session_id": session.session_id,
+                "status": "created",
+                "internal_camera_id": session.internal_camera_id,
+                "external_camera_id": session.external_camera_id,
+                "created_at": session.created_at.isoformat()
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create session")
+            
+    except Exception as e:
+        logger.error(f"Error creating camera session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/session/{session_id}/status")
+async def get_session_status(session_id: str):
+    """Get status of a camera session"""
+    try:
+        from app.services.camera_session_manager import camera_session_manager
+        from app.services.websocket_connection_manager import websocket_connection_manager
+        
+        session = camera_session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        connection_status = websocket_connection_manager.get_connection_status(session_id)
+        
+        return {
+            "session": session.get_status(),
+            "connections": connection_status,
+            "ready_for_recording": camera_session_manager.validate_session_readiness(session_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/session/{session_id}")
+async def cleanup_session(session_id: str):
+    """Clean up a camera session"""
+    try:
+        from app.services.camera_session_manager import camera_session_manager
+        from app.services.websocket_connection_manager import websocket_connection_manager
+        
+        # Close all connections first
+        await websocket_connection_manager.close_session_connections(session_id)
+        
+        # Clean up session
+        success = camera_session_manager.cleanup_session(session_id)
+        
+        if success:
+            return {"status": "cleaned_up", "session_id": session_id}
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cleaning up session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.websocket("/internal-camera/{session_id}")
+async def internal_camera_stream(websocket: WebSocket, session_id: str):
+    """Session-based internal camera WebSocket endpoint"""
+    try:
+        from app.services.dual_camera_websocket_handler import dual_camera_websocket_handler
+        await dual_camera_websocket_handler.handle_internal_camera_connection(websocket, session_id)
+    except Exception as e:
+        logger.error(f"Error in internal camera stream for session {session_id}: {e}")
+
+@router.websocket("/external-camera/{session_id}")
+async def external_camera_stream(websocket: WebSocket, session_id: str):
+    """Session-based external camera WebSocket endpoint"""
+    try:
+        from app.services.dual_camera_websocket_handler import dual_camera_websocket_handler
+        await dual_camera_websocket_handler.handle_external_camera_connection(websocket, session_id)
+    except Exception as e:
+        logger.error(f"Error in external camera stream for session {session_id}: {e}")
+
+@router.get("/sessions/active")
+async def get_active_sessions():
+    """Get all active camera sessions"""
+    try:
+        from app.services.camera_session_manager import camera_session_manager
+        from app.services.websocket_connection_manager import websocket_connection_manager
+        from app.services.event_coordinator import event_coordinator
+        
+        active_sessions = camera_session_manager.list_active_sessions()
+        session_details = []
+        
+        for session_id in active_sessions:
+            session = camera_session_manager.get_session(session_id)
+            connections = websocket_connection_manager.get_connection_status(session_id)
+            event_status = event_coordinator.get_session_event_status(session_id)
+            
+            session_details.append({
+                "session_id": session_id,
+                "session_info": session.get_status() if session else None,
+                "connections": connections,
+                "event_status": event_status
+            })
+        
+        return {
+            "total_sessions": len(session_details),
+            "sessions": session_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting active sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/sessions/stats")
+async def get_session_statistics():
+    """Get comprehensive session statistics"""
+    try:
+        from app.services.camera_session_manager import camera_session_manager
+        from app.services.websocket_connection_manager import websocket_connection_manager
+        from app.services.dual_camera_websocket_handler import dual_camera_websocket_handler
+        from app.services.event_coordinator import event_coordinator
+        
+        return {
+            "session_manager": {
+                "active_sessions": len(camera_session_manager.list_active_sessions()),
+                "session_configs": len(camera_session_manager.session_configs)
+            },
+            "connections": websocket_connection_manager.get_all_connections_status(),
+            "processing": dual_camera_websocket_handler.get_all_sessions_stats(),
+            "events": event_coordinator.get_coordinator_stats()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting session statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/session/{session_id}/start-event")
+async def start_session_event(session_id: str, trigger_data: dict = None):
+    """Manually start an event for a session (for testing)"""
+    try:
+        from app.services.event_coordinator import event_coordinator
+        
+        if trigger_data is None:
+            trigger_data = {
+                "bee_status": "outside",
+                "trigger_type": "manual",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        event_id = await event_coordinator.start_event(session_id, trigger_data)
+        
+        if event_id:
+            return {
+                "status": "success",
+                "event_id": event_id,
+                "session_id": session_id,
+                "message": "Event started successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to start event")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting event for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/session/{session_id}/end-event")
+async def end_session_event(session_id: str, trigger_data: dict = None):
+    """Manually end an event for a session (for testing)"""
+    try:
+        from app.services.event_coordinator import event_coordinator
+        
+        if trigger_data is None:
+            trigger_data = {
+                "bee_status": "inside",
+                "trigger_type": "manual",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        success = await event_coordinator.end_event(session_id, trigger_data)
+        
+        if success:
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "message": "Event ended successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to end event or no active event")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error ending event for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/session/{session_id}/cancel-event")
+async def cancel_session_event(session_id: str, reason: str = "manual_cancellation"):
+    """Cancel an active event for a session"""
+    try:
+        from app.services.event_coordinator import event_coordinator
+        
+        success = await event_coordinator.cancel_event(session_id, reason)
+        
+        if success:
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "reason": reason,
+                "message": "Event cancelled successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="No active event found to cancel")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling event for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/events/active")
+async def get_active_events():
+    """Get all active events across all sessions"""
+    try:
+        from app.services.event_coordinator import event_coordinator
+        
+        return event_coordinator.get_active_events()
+        
+    except Exception as e:
+        logger.error(f"Error getting active events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/events/history")
+async def get_event_history(limit: int = 10):
+    """Get recent event history"""
+    try:
+        from app.services.event_coordinator import event_coordinator
+        
+        return {
+            "history": event_coordinator.get_event_history(limit),
+            "limit": limit
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting event history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/system/session-health")
+async def get_session_system_health():
+    """Get health status of the session-based system"""
+    try:
+        from app.services.camera_session_manager import camera_session_manager
+        from app.services.websocket_connection_manager import websocket_connection_manager
+        from app.services.dual_camera_websocket_handler import dual_camera_websocket_handler
+        from app.services.event_coordinator import event_coordinator
+        
+        # Clean up orphaned connections
+        cleaned_connections = websocket_connection_manager.cleanup_orphaned_connections()
+        
+        health_status = {
+            "timestamp": datetime.now().isoformat(),
+            "overall_status": "healthy",
+            "components": {
+                "session_manager": {
+                    "status": "healthy",
+                    "active_sessions": len(camera_session_manager.list_active_sessions()),
+                    "configured_sessions": len(camera_session_manager.session_configs)
+                },
+                "connection_manager": {
+                    "status": "healthy",
+                    "total_connections": websocket_connection_manager.get_all_connections_status()["total_connections"],
+                    "cleaned_orphaned": cleaned_connections
+                },
+                "websocket_handler": {
+                    "status": "healthy",
+                    "processing_sessions": dual_camera_websocket_handler.get_all_sessions_stats()["total_sessions"]
+                },
+                "event_coordinator": {
+                    "status": "healthy",
+                    "active_events": event_coordinator.get_coordinator_stats()["active_events_count"],
+                    "pending_notifications": event_coordinator.get_coordinator_stats()["pending_notifications"]
+                }
+            }
+        }
+        
+        return health_status
+        
+    except Exception as e:
+        logger.error(f"Error getting session system health: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

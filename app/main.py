@@ -38,10 +38,27 @@ logger = logging.getLogger(__name__)
 # Log startup message
 logger.info("🚀 Queen Track Backend v2.0 initializing...")
 
+# Initialize session-based services
+try:
+    from app.services import (
+        camera_session_manager,
+        websocket_connection_manager,
+        dual_camera_websocket_handler,
+        event_coordinator
+    )
+    logger.info("✅ Session-based services initialized successfully")
+    logger.info("🎯 Camera Session Manager ready")
+    logger.info("🔗 WebSocket Connection Manager ready")
+    logger.info("📹 Dual Camera WebSocket Handler ready")
+    logger.info("⚡ Event Coordinator ready")
+except Exception as e:
+    logger.error(f"💥 Error initializing session services: {e}")
+    raise
+
 app = FastAPI(
     title="Queen Track Backend",
     version="2.0.0",
-    description="Professional API for Queen Track bee monitoring system with email notifications and video streaming."
+    description="Professional API for Queen Track bee monitoring system with dual camera session management and event coordination."
 )
 
 # Videos directory already created above
