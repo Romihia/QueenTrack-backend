@@ -244,7 +244,7 @@ def detect_sequence_pattern(x_center, y_center, current_time):
     consecutive_inside = bee_state["consecutive_detections"]["inside"]
     consecutive_outside = bee_state["consecutive_detections"]["outside"]
     
-    logger.info(f"Consecutive counts: inside={consecutive_inside}, outside={consecutive_outside}")
+    # logger.info(f"Consecutive counts: inside={consecutive_inside}, outside={consecutive_outside}")
     
     # Only update status if we have enough consecutive detections
     confirmed_status = None
@@ -537,9 +537,6 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
     if event_action == "start_event":
         logger.warning(f"🚪 [{current_time}] EVENT STARTED: Bee exited after entering")
         
-        # Send external camera activation signal
-        await send_external_camera_activation(True)
-        
         try:
             event_data = EventCreate(
                 time_out=current_time,
@@ -551,6 +548,9 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
             new_event = await create_event(event_data)
             bee_state["current_event_id"] = new_event.id
             logger.info(f"📝 Created new event with ID: {new_event.id}")
+            
+            # Send external camera activation signal with valid event ID
+            await send_external_camera_activation(True, new_event.id)
             
             # Start video recording
             video_paths = video_recording_service.start_event_recording(new_event.id)
@@ -616,12 +616,13 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
     elif event_action == "end_event":
         logger.warning(f"🏠 [{current_time}] EVENT ENDED: Bee returned to hive")
         
-        # Send external camera deactivation signal
-        await send_external_camera_activation(False)
-        
         try:
+            # Get current event ID from bee_state
             current_event_id = bee_state["current_event_id"]
             if current_event_id:
+                # Send external camera deactivation signal with valid event ID
+                await send_external_camera_activation(False, current_event_id)
+                
                 # Stop video recording
                 video_paths = video_recording_service.stop_event_recording()
                 
@@ -774,87 +775,275 @@ async def get_model_info():
     except Exception as e:
         return {"error": str(e), "models_loaded": False}
 
+# Utility function to safely receive binary frames
+async def safe_receive_binary_frame(websocket: WebSocket):
+    """Safely receive binary WebSocket frame, handling different message formats.
+    
+    This function avoids the KeyError: 'bytes' issue by properly checking message types
+    and content before accessing the 'bytes' key.
+    """
+    try:
+        # Use raw receive() and check message type
+        message = await websocket.receive()
+        
+        if message["type"] == "websocket.receive" and "bytes" in message:
+            # Binary message with bytes payload
+            return message["bytes"]
+        elif message["type"] == "websocket.receive" and "text" in message:
+            # Text message - log and return None
+            logger.warning(f"Received text message instead of binary: {message['text'][:50]}")
+            return None
+        elif message["type"] == "websocket.disconnect":
+            # Client disconnected - raise WebSocketDisconnect
+            logger.info("WebSocket disconnected")
+            raise WebSocketDisconnect(code=1000, reason="Client disconnected")
+        else:
+            # Unknown message type
+            logger.warning(f"Received unexpected message type: {message['type']}")
+            return None
+            
+    except WebSocketDisconnect:
+        # Re-raise WebSocketDisconnect to be caught by the outer handlers
+        raise
+    except Exception as e:
+        logger.error(f"Error receiving WebSocket message: {e}")
+        return None
+
 @router.websocket("/live-stream")
 async def live_stream(websocket: WebSocket):
     client_ip = websocket.client.host if websocket.client else "unknown"
-    logger.info(f"🔌 [WebSocket DEBUG] live-stream connection attempt from {client_ip}")
+    connection_start_time = datetime.now()
+    logger.info(f"🔌 [WebSocket DEBUG] live-stream connection attempt from {client_ip} at {connection_start_time}")
     logger.info(f"🔌 [WebSocket DEBUG] Headers: {dict(websocket.headers)}")
     logger.info(f"🔌 [WebSocket DEBUG] Query params: {dict(websocket.query_params)}")
     logger.info(f"🔌 [WebSocket DEBUG] Scope: {websocket.scope.get('path', 'no path')}")
     
-    await websocket.accept()
-    logger.info(f"✅ [WebSocket DEBUG] live-stream connection established from {client_ip}")
-    
-    # Reset tracking state on new connection
-    bee_tracking_service.reset_state()
-    logger.info("🔄 Tracking state reset for new connection")
+    try:
+        logger.info(f"🔌 [WebSocket DEBUG] Attempting to accept WebSocket connection...")
+        await websocket.accept()
+        accept_time = datetime.now()
+        accept_duration = (accept_time - connection_start_time).total_seconds() * 1000
+        logger.info(f"✅ [WebSocket DEBUG] live-stream connection established from {client_ip} (accept took {accept_duration:.2f}ms)")
+        
+        # Immediate ping test to verify connection stability
+        logger.info(f"🔌 [WebSocket DEBUG] Sending immediate ping test...")
+        ping_success = False
+        try:
+            ping_message = {
+                "type": "connection_test",
+                "server_timestamp": accept_time.isoformat(),
+                "message": "WebSocket connection established successfully"
+            }
+            await websocket.send_text(json.dumps(ping_message))
+            logger.info(f"✅ [WebSocket DEBUG] Immediate ping test sent successfully")
+            
+            # Wait briefly to see if connection holds
+            await asyncio.sleep(0.1)
+            logger.info(f"✅ [WebSocket DEBUG] Connection stable after 100ms")
+            ping_success = True
+            
+        except WebSocketDisconnect:
+            logger.error(f"❌ [WebSocket DEBUG] Client disconnected during ping test")
+            return
+        except Exception as ping_error:
+            logger.error(f"❌ [WebSocket DEBUG] Immediate ping test failed: {ping_error}")
+            logger.error(f"❌ [WebSocket DEBUG] Error type: {type(ping_error).__name__}")
+            # Continue anyway, the connection might still be usable for frame processing
+            logger.warning(f"⚠️ [WebSocket DEBUG] Continuing despite ping test failure...")
+        
+        if not ping_success:
+            logger.warning(f"⚠️ [WebSocket DEBUG] Ping test failed but attempting to continue...")
+        
+        # Reset tracking state on new connection (fix bee_state initialization)
+        global bee_state
+        bee_state = {
+            "current_status": None,
+            "status_sequence": [],
+            "consecutive_detections": {"inside": 0, "outside": 0},
+            "event_active": False,  # Critical fix: ensure this starts as False
+            "current_event_id": None,
+        }
+        bee_tracking_service.reset_state()
+        logger.info("🔄 [WebSocket DEBUG] Both tracking states reset for new connection")
+        logger.info(f"🔄 [WebSocket DEBUG] bee_state.event_active = {bee_state['event_active']}")
+        
+        # Start heartbeat monitoring
+        last_heartbeat = datetime.now()
+        heartbeat_interval = 10.0  # 10 seconds
+        logger.info(f"💓 [WebSocket DEBUG] Heartbeat monitoring started (interval: {heartbeat_interval}s)")
+        
+    except Exception as accept_error:
+        logger.error(f"💥 [WebSocket DEBUG] Error during WebSocket accept: {accept_error}")
+        logger.error(f"💥 [WebSocket DEBUG] Error type: {type(accept_error).__name__}")
+        return
     
     try:
+        logger.info(f"🔌 [WebSocket DEBUG] Starting frame processing loop...")
+        frame_count = 0
+        
         while True:
-            # Receive frame data
-            data = await websocket.receive_bytes()
-            
-            # Convert bytes to numpy array
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if frame is None:
-                logger.warning("Invalid frame received")
-                continue
+            try:
+                # Receive frame data with detailed logging for first few frames
+                if frame_count < 5:
+                    logger.info(f"🔌 [WebSocket DEBUG] Waiting to receive frame #{frame_count}...")
+                
+                data = await safe_receive_binary_frame(websocket)
+                
+                # Check if we received valid binary data
+                if data is None:
+                    logger.warning(f"⚠️ [WebSocket DEBUG] Invalid or non-binary frame data received (frame #{frame_count})")
+                    continue
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Frame #{frame_count} received ({len(data)} bytes)")
+                
+                # Convert bytes to numpy array
+                nparr = np.frombuffer(data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if frame is None:
+                    logger.warning(f"⚠️ [WebSocket DEBUG] Invalid frame received (frame #{frame_count})")
+                    continue
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Frame #{frame_count} decoded successfully ({frame.shape})")
+                
+                frame_count += 1
+                
+            except Exception as frame_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error in frame processing loop (frame #{frame_count}): {frame_error}")
+                logger.error(f"💥 [WebSocket DEBUG] Error type: {type(frame_error).__name__}")
+                raise  # Re-raise to be caught by outer exception handler
             
             # Process frame with current settings
-            processed_frame, bee_status, current_time, bee_x, bee_y = process_frame(frame)
+            try:
+                if frame_count < 5:
+                    logger.info(f"🔌 [WebSocket DEBUG] Processing frame #{frame_count}...")
+                
+                processed_frame, bee_status, current_time, bee_x, bee_y = process_frame(frame)
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Frame #{frame_count} processed successfully")
+                
+            except Exception as process_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error processing frame #{frame_count}: {process_error}")
+                logger.error(f"💥 [WebSocket DEBUG] Error type: {type(process_error).__name__}")
+                continue  # Skip this frame and continue
             
             # Add frame to video recording service
-            video_recording_service.add_processed_frame(processed_frame)
+            try:
+                video_recording_service.add_processed_frame(processed_frame)
+            except Exception as recording_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error adding frame to recording service: {recording_error}")
+                # Continue processing even if recording fails
             
             # Handle bee tracking if status detected
-            if bee_status and bee_x is not None and bee_y is not None:
-                # Use the actual bee coordinates for event detection
-                status, event_action = detect_sequence_pattern(bee_x, bee_y, current_time)
-                
-                if event_action:
-                    # Run event handling in background to avoid blocking WebSocket
-                    import asyncio
-                    asyncio.create_task(handle_bee_event(event_action, bee_status, current_time, processed_frame))
-                    logger.info(f"🚀 Event handling started in background: {event_action}")
+            try:
+                if bee_status and bee_x is not None and bee_y is not None:
+                    # Use the actual bee coordinates for event detection
+                    status, event_action = detect_sequence_pattern(bee_x, bee_y, current_time)
+                    
+                    if event_action:
+                        # Run event handling in background to avoid blocking WebSocket
+                        asyncio.create_task(handle_bee_event(event_action, bee_status, current_time, processed_frame))
+                        logger.info(f"🚀 Event handling started in background: {event_action}")
+                        
+            except Exception as tracking_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error in bee tracking: {tracking_error}")
+                # Continue processing even if tracking fails
             
             # Encode and send processed frame
-            _, buffer = cv2.imencode('.jpg', processed_frame, 
-                                   [cv2.IMWRITE_JPEG_QUALITY, 80])
+            try:
+                if frame_count < 5:
+                    logger.info(f"🔌 [WebSocket DEBUG] Encoding frame #{frame_count}...")
+                
+                _, buffer = cv2.imencode('.jpg', processed_frame, 
+                                       [cv2.IMWRITE_JPEG_QUALITY, 80])
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Frame #{frame_count} encoded ({len(buffer)} bytes)")
+                    
+            except Exception as encode_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error encoding frame #{frame_count}: {encode_error}")
+                continue  # Skip sending this frame
             
             # Send status update
-            status_update = {
-                "bee_status": bee_status,
-                "current_time": current_time.isoformat(),
-                "external_camera_status": {
-                    "is_recording": video_recording_service.is_event_recording,
-                    "current_event_id": video_recording_service.current_event_id
-                },
-                "settings_applied": {
-                    "detection_enabled": current_settings.processing.detection_enabled,
-                    "drawing_enabled": any([
-                        current_settings.processing.draw_bee_path,
-                        current_settings.processing.draw_center_line,
-                        current_settings.processing.draw_roi_box
-                    ])
+            try:
+                status_update = {
+                    "bee_status": bee_status,
+                    "current_time": current_time.isoformat(),
+                    "external_camera_status": {
+                        "is_recording": video_recording_service.is_event_recording,
+                        "current_event_id": video_recording_service.current_event_id
+                    },
+                    "settings_applied": {
+                        "detection_enabled": current_settings.processing.detection_enabled,
+                        "drawing_enabled": any([
+                            current_settings.processing.draw_bee_path,
+                            current_settings.processing.draw_center_line,
+                            current_settings.processing.draw_roi_box
+                        ])
+                    }
                 }
-            }
+                
+                if frame_count < 5:
+                    logger.info(f"🔌 [WebSocket DEBUG] Sending status update for frame #{frame_count}...")
+                
+                await websocket.send_text(json.dumps(status_update))
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Status update sent for frame #{frame_count}")
+                    logger.info(f"🔌 [WebSocket DEBUG] Sending frame bytes for frame #{frame_count}...")
+                
+                await websocket.send_bytes(buffer.tobytes())
+                
+                if frame_count < 5:
+                    logger.info(f"✅ [WebSocket DEBUG] Frame #{frame_count} sent successfully")
+                    
+            except Exception as send_error:
+                logger.error(f"💥 [WebSocket DEBUG] Error sending frame #{frame_count}: {send_error}")
+                logger.error(f"💥 [WebSocket DEBUG] Error type: {type(send_error).__name__}")
+                raise  # This will trigger the WebSocketDisconnect handler
             
-            await websocket.send_text(json.dumps(status_update))
-            await websocket.send_bytes(buffer.tobytes())
+            # Heartbeat monitoring - send periodic ping
+            current_time_check = datetime.now()
+            if (current_time_check - last_heartbeat).total_seconds() >= heartbeat_interval:
+                try:
+                    heartbeat_message = {
+                        "type": "heartbeat",
+                        "server_timestamp": current_time_check.isoformat(),
+                        "frame_count": frame_count,
+                        "connection_duration_ms": (current_time_check - connection_start_time).total_seconds() * 1000
+                    }
+                    await websocket.send_text(json.dumps(heartbeat_message))
+                    last_heartbeat = current_time_check
+                    logger.info(f"💓 [WebSocket DEBUG] Heartbeat sent (frame #{frame_count})")
+                except Exception as heartbeat_error:
+                    logger.error(f"💥 [WebSocket DEBUG] Heartbeat failed: {heartbeat_error}")
+                    raise  # This indicates connection is broken
             
-    except WebSocketDisconnect:
-        logger.info("🔌 WebSocket disconnected")
+    except WebSocketDisconnect as disconnect_error:
+        disconnect_time = datetime.now()
+        connection_duration = (disconnect_time - connection_start_time).total_seconds() * 1000
+        logger.info(f"🔌 [WebSocket DEBUG] WebSocket disconnected after {connection_duration:.2f}ms")
+        logger.info(f"🔌 [WebSocket DEBUG] Disconnect details: {disconnect_error}")
+        logger.info(f"🔌 [WebSocket DEBUG] Total frames processed: {frame_count}")
+        
+        # Enhanced debugging for bee_state during disconnect
+        logger.info(f"🔌 [WebSocket DEBUG] bee_state at disconnect: {bee_state}")
+        logger.info(f"🔌 [WebSocket DEBUG] bee_state.event_active = {bee_state.get('event_active')}")
+        logger.info(f"🔌 [WebSocket DEBUG] bee_state.current_event_id = {bee_state.get('current_event_id')}")
         
         # טיפול בסיום אירוע כשמפסיקים את הlive stream
         if bee_state.get("event_active") and bee_state.get("current_event_id"):
-            logger.warning("⚠️ Live stream disconnected during active event - finishing event")
+            logger.warning("⚠️ [WebSocket DEBUG] Live stream disconnected during active event - finishing event")
             try:
                 await handle_bee_event("end_event", "inside", datetime.now())
-                logger.info("✅ Event completed due to stream disconnection")
+                logger.info("✅ [WebSocket DEBUG] Event completed due to stream disconnection")
             except Exception as e:
-                logger.error(f"❌ Error finishing event on disconnect: {e}")
+                logger.error(f"❌ [WebSocket DEBUG] Error finishing event on disconnect: {e}")
+        else:
+            logger.info("ℹ️ [WebSocket DEBUG] No active event during disconnect, cleanup not needed")
         
         # Clean up videos if enabled
         if current_settings.processing.auto_delete_videos_after_session:
@@ -864,10 +1053,22 @@ async def live_stream(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Failed to cleanup session videos: {e}")
     
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+    except Exception as general_error:
+        error_time = datetime.now()
+        connection_duration = (error_time - connection_start_time).total_seconds() * 1000
+        logger.error(f"💥 [WebSocket DEBUG] General WebSocket error after {connection_duration:.2f}ms: {general_error}")
+        logger.error(f"💥 [WebSocket DEBUG] Error type: {type(general_error).__name__}")
+        logger.error(f"💥 [WebSocket DEBUG] Total frames processed before error: {frame_count if 'frame_count' in locals() else 0}")
+        
+        # Log the full traceback for debugging
+        import traceback
+        logger.error(f"💥 [WebSocket DEBUG] Full traceback:\n{traceback.format_exc()}")
+        
     finally:
-        logger.info("🔌 WebSocket connection closed")
+        final_time = datetime.now()
+        total_duration = (final_time - connection_start_time).total_seconds() * 1000
+        logger.info(f"🔌 [WebSocket DEBUG] WebSocket connection closed after {total_duration:.2f}ms total duration")
+        logger.info(f"🔌 [WebSocket DEBUG] Final cleanup completed")
 
 async def cleanup_session_videos():
     """Clean up videos from current session if auto-delete is enabled"""
@@ -1556,9 +1757,14 @@ async def external_camera_stream(websocket: WebSocket):
     
     try:
         while True:
-            # Receive frame data from external camera
-            data = await websocket.receive_bytes()
+            # Receive frame data from external camera using safe handler
+            data = await safe_receive_binary_frame(websocket)
             
+            # Check if we received valid binary data
+            if data is None:
+                logger.warning("Invalid or non-binary frame data received from external camera")
+                continue
+                
             # Convert bytes to numpy array
             nparr = np.frombuffer(data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -1608,29 +1814,68 @@ async def external_camera_stream(websocket: WebSocket):
     finally:
         logger.info("🔌 External camera WebSocket connection closed")
 
-async def send_external_camera_activation(activate: bool):
+async def send_external_camera_activation(activate: bool, event_id: str = None, test_id: str = None):
     """Send external camera activation/deactivation message to all connected clients"""
+    trigger_start_time = datetime.now()
+    
+    # Enhanced logging with test context
+    test_prefix = f"[TEST {test_id}] " if test_id else ""
+    
+    logger.info(f"🎯 {test_prefix}EXTERNAL CAMERA TRIGGER START")
+    logger.info(f"🎯 {test_prefix}Action: {'ACTIVATE' if activate else 'DEACTIVATE'}")
+    logger.info(f"🎯 {test_prefix}Event ID: {event_id}")
+    logger.info(f"🎯 {test_prefix}Connected notification clients: {len(notification_clients)}")
+    logger.info(f"🎯 {test_prefix}Trigger timestamp: {trigger_start_time.isoformat()}")
+    
     message = {
         "type": "external_camera_control",
         "action": "activate" if activate else "deactivate",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": trigger_start_time.isoformat(),
+        "event_id": event_id,
+        "test_id": test_id
     }
     
-    # Send to notification clients
+    logger.info(f"🎯 {test_prefix}Message payload: {json.dumps(message, indent=2, ensure_ascii=False)}")
+    
+    # Send to notification clients with detailed tracking
     disconnected_clients = []
-    for client in notification_clients:
+    successful_sends = 0
+    failed_sends = 0
+    
+    for i, client in enumerate(notification_clients):
+        client_send_start = datetime.now()
         try:
+            logger.info(f"🎯 {test_prefix}Sending to client #{i+1}...")
             await client.send_text(json.dumps(message, ensure_ascii=False))
+            
+            send_duration = (datetime.now() - client_send_start).total_seconds() * 1000
+            logger.info(f"🎯 {test_prefix}✅ Client #{i+1} message sent successfully ({send_duration:.2f}ms)")
+            successful_sends += 1
+            
         except Exception as e:
-            logger.error(f"Failed to send external camera control to client: {e}")
+            send_duration = (datetime.now() - client_send_start).total_seconds() * 1000
+            logger.error(f"🎯 {test_prefix}❌ Client #{i+1} failed to send ({send_duration:.2f}ms): {e}")
+            logger.error(f"🎯 {test_prefix}❌ Client #{i+1} error type: {type(e).__name__}")
             disconnected_clients.append(client)
+            failed_sends += 1
     
     # Remove disconnected clients
     for client in disconnected_clients:
         if client in notification_clients:
             notification_clients.remove(client)
+            logger.warning(f"🎯 {test_prefix}🗑️ Removed disconnected client from notification list")
     
-    logger.info(f"External camera control sent: {message['action']} to {len(notification_clients)} clients")
+    # Final statistics
+    total_duration = (datetime.now() - trigger_start_time).total_seconds() * 1000
+    
+    logger.info(f"🎯 {test_prefix}EXTERNAL CAMERA TRIGGER COMPLETED")
+    logger.info(f"🎯 {test_prefix}Total duration: {total_duration:.2f}ms")
+    logger.info(f"🎯 {test_prefix}Successful sends: {successful_sends}")
+    logger.info(f"🎯 {test_prefix}Failed sends: {failed_sends}")
+    logger.info(f"🎯 {test_prefix}Remaining connected clients: {len(notification_clients)}")
+    
+    # Return success status for test verification
+    return successful_sends > 0
 
 @router.post("/create-session")
 async def create_camera_session(session_data: dict):
