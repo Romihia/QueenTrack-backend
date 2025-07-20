@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from app.routes.video_routes import router as video_router
 from app.routes.events_routes import router as events_router
 from app.routes.system_routes import router as system_router
+from app.routes.test_routes import router as test_router
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
@@ -91,6 +92,7 @@ app.add_middleware(
 app.include_router(video_router, prefix="/video", tags=["video"])
 app.include_router(events_router, prefix="/events", tags=["events"])
 app.include_router(system_router, prefix="/system", tags=["system"])
+app.include_router(test_router, prefix="/test", tags=["testing"])
 
 # Log successful initialization
 logger.info("✅ All routers loaded successfully")
