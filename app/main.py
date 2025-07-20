@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from app.routes.video_routes import router as video_router
 from app.routes.events_routes import router as events_router
 from app.routes.system_routes import router as system_router
+from app.routes.test_routes import router as test_router
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
@@ -38,10 +39,27 @@ logger = logging.getLogger(__name__)
 # Log startup message
 logger.info("🚀 Queen Track Backend v2.0 initializing...")
 
+# Initialize session-based services
+try:
+    from app.services import (
+        camera_session_manager,
+        websocket_connection_manager,
+        dual_camera_websocket_handler,
+        event_coordinator
+    )
+    logger.info("✅ Session-based services initialized successfully")
+    logger.info("🎯 Camera Session Manager ready")
+    logger.info("🔗 WebSocket Connection Manager ready")
+    logger.info("📹 Dual Camera WebSocket Handler ready")
+    logger.info("⚡ Event Coordinator ready")
+except Exception as e:
+    logger.error(f"💥 Error initializing session services: {e}")
+    raise
+
 app = FastAPI(
     title="Queen Track Backend",
     version="2.0.0",
-    description="Professional API for Queen Track bee monitoring system with email notifications and video streaming."
+    description="Professional API for Queen Track bee monitoring system with dual camera session management and event coordination."
 )
 
 # Videos directory already created above
@@ -74,6 +92,7 @@ app.add_middleware(
 app.include_router(video_router, prefix="/video", tags=["video"])
 app.include_router(events_router, prefix="/events", tags=["events"])
 app.include_router(system_router, prefix="/system", tags=["system"])
+app.include_router(test_router, prefix="/test", tags=["testing"])
 
 # Log successful initialization
 logger.info("✅ All routers loaded successfully")
