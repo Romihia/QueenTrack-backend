@@ -5,10 +5,11 @@ import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import cv2
 import numpy as np
+from app.services.timezone_service import get_timezone_service
 
 # Ensure logs directory exists
 os.makedirs('/data/logs', exist_ok=True)
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class EmailService:
     """
-    Professional email service for Queen Track notifications
+    Professional email service for Queen Track notifications with dynamic settings
     """
     
     def __init__(self):
@@ -26,13 +27,75 @@ class EmailService:
         self.smtp_port = 587
         self.email_user = os.getenv("EMAIL_USER")
         self.email_pass = os.getenv("EMAIL_PASS")
-        self.send_to_email = os.getenv("SEND_EMAIL")
+        self.default_email = os.getenv("SEND_EMAIL")  # Fallback email
         
-        if not all([self.email_user, self.email_pass, self.send_to_email]):
-            logger.error("Email configuration missing. Please check environment variables.")
-            raise ValueError("Email configuration incomplete")
+        # Dynamic settings
+        self.notifications_enabled = False
+        self.notification_email = ""
+        self.email_on_exit = True
+        self.email_on_entrance = True
         
-        logger.info(f"Email service initialized. Sending from: {self.email_user} to: {self.send_to_email}")
+        # Timezone service for local time
+        try:
+            self.timezone_service = get_timezone_service()
+        except Exception as e:
+            logger.warning(f"⚠️ Timezone service not available, using datetime.now(): {e}")
+            self.timezone_service = None
+        
+        if not all([self.email_user, self.email_pass]):
+            logger.error("Email authentication missing. Please check EMAIL_USER and EMAIL_PASS environment variables.")
+            raise ValueError("Email authentication incomplete")
+        
+        logger.info(f"Email service initialized. Sending from: {self.email_user}")
+        logger.info(f"📧 Email service initial settings: enabled={self.notifications_enabled}, recipient={self.get_recipient_email()}")
+    
+    async def load_settings_from_database(self):
+        """Load email settings from database on startup"""
+        try:
+            from app.services.settings_service import get_settings_service
+            settings_service = await get_settings_service()
+            settings = await settings_service.get_current_settings()
+            
+            if "processing" in settings:
+                logger.info(f"🔧 Debug - Raw processing settings from DB: {settings['processing']}")
+                
+                email_config = {
+                    "notifications_enabled": settings["processing"].get("email_notifications_enabled", False),
+                    "notification_email": settings["processing"].get("notification_email", ""),
+                    "email_on_exit": settings["processing"].get("email_on_exit", True),
+                    "email_on_entrance": settings["processing"].get("email_on_entrance", True)
+                }
+                
+                logger.info(f"🔧 Debug - Email config extracted: {email_config}")
+                self.update_settings(email_config)
+                logger.info("✅ Email service loaded settings from database")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load email settings from database: {e}")
+    
+    def update_settings(self, email_config: dict):
+        """Update email settings dynamically"""
+        try:
+            self.notifications_enabled = email_config.get("notifications_enabled", False)
+            self.notification_email = email_config.get("notification_email", "")
+            self.email_on_exit = email_config.get("email_on_exit", True)
+            self.email_on_entrance = email_config.get("email_on_entrance", True)
+            
+            # Use user-defined email or fallback to default
+            effective_email = self.notification_email or self.default_email
+            
+            logger.info(f"📧 Email settings updated: enabled={self.notifications_enabled}, email={effective_email}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating email settings: {e}")
+    
+    def get_recipient_email(self) -> str:
+        """Get the current recipient email address"""
+        return self.notification_email or self.default_email or ""
+    
+    def is_notifications_enabled(self) -> bool:
+        """Check if email notifications are enabled"""
+        return self.notifications_enabled and bool(self.get_recipient_email())
 
     def create_bee_detection_email(self, 
                                  event_type: str, 
@@ -55,16 +118,24 @@ class EmailService:
         msg = MIMEMultipart('related')
         
         # Email headers
+        recipient_email = self.get_recipient_email()
         msg['From'] = self.email_user
-        msg['To'] = self.send_to_email
+        msg['To'] = recipient_email
+        
+        # Convert timestamp to local time for display
+        if self.timezone_service:
+            local_timestamp = self.timezone_service.to_local_time(timestamp)
+        else:
+            # Fallback: add 3 hours manually
+            local_timestamp = timestamp + timedelta(hours=3)
         
         if event_type == 'exit':
-            msg['Subject'] = f"🐝 Queen Track Alert: Marked Bee Has Left the Hive - {timestamp.strftime('%H:%M:%S')}"
+            msg['Subject'] = f"🐝 Queen Track Alert: Marked Bee Has Left the Hive - {local_timestamp.strftime('%H:%M:%S')}"
             event_title = "Bee Exit Detected"
             event_description = "The marked bee has left the hive and is now outside."
             event_color = "#FF6B35"  # Orange
         else:
-            msg['Subject'] = f"🏠 Queen Track Alert: Marked Bee Has Returned - {timestamp.strftime('%H:%M:%S')}"
+            msg['Subject'] = f"🏠 Queen Track Alert: Marked Bee Has Returned - {local_timestamp.strftime('%H:%M:%S')}"
             event_title = "Bee Return Detected"
             event_description = "The marked bee has returned to the hive."
             event_color = "#4CAF50"  # Green
@@ -98,8 +169,8 @@ class EmailService:
                     <div class="event-info">
                         <h3>📊 Event Details</h3>
                         <p><strong>Event Type:</strong> <span class="status-badge">{event_type.upper()}</span></p>
-                        <p><strong>Date:</strong> {timestamp.strftime('%Y-%m-%d')}</p>
-                        <p><strong>Time:</strong> <span class="timestamp">{timestamp.strftime('%H:%M:%S')}</span></p>
+                        <p><strong>Date:</strong> {local_timestamp.strftime('%Y-%m-%d')}</p>
+                        <p><strong>Time:</strong> <span class="timestamp">{local_timestamp.strftime('%H:%M:%S')}</span></p>
                         <p><strong>Description:</strong> {event_description}</p>
                     </div>
                     
@@ -115,7 +186,7 @@ class EmailService:
                 
                 <div class="footer">
                     <p>This is an automated message from Queen Track System</p>
-                    <p>Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p>Generated at: {(self.timezone_service.get_local_now() if self.timezone_service else datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
             </div>
         </body>
@@ -156,6 +227,18 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
+            # Check if notifications are enabled and configured
+            if not self.is_notifications_enabled():
+                logger.info(f"📧 Email notifications disabled or no recipient configured - skipping {event_type} notification")
+                return False
+            
+            # Check event-specific settings
+            if event_type == 'exit' and not self.email_on_exit:
+                logger.info(f"📧 Exit email notifications disabled - skipping {event_type} notification")
+                return False
+            elif event_type == 'entrance' and not self.email_on_entrance:
+                logger.info(f"📧 Entrance email notifications disabled - skipping {event_type} notification")
+                return False
             # Create email message
             msg = self.create_bee_detection_email(event_type, timestamp, bee_image, additional_info)
             
@@ -166,7 +249,8 @@ class EmailService:
                 server.login(self.email_user, self.email_pass)
                 
                 text = msg.as_string()
-                server.sendmail(self.email_user, self.send_to_email, text)
+                recipient_email = self.get_recipient_email()
+                server.sendmail(self.email_user, recipient_email, text)
                 
             logger.info(f"✅ Email notification sent successfully for {event_type} event at {timestamp}")
             return True
@@ -196,4 +280,16 @@ class EmailService:
             return False
 
 # Create singleton instance
-email_service = EmailService() 
+email_service = EmailService()
+
+async def update_email_settings(email_config: dict):
+    """Update the global email service settings"""
+    try:
+        email_service.update_settings(email_config)
+        logger.info("🔄 Global email service settings updated")
+    except Exception as e:
+        logger.error(f"❌ Error updating global email service settings: {e}")
+
+def get_email_service() -> EmailService:
+    """Get the global email service instance"""
+    return email_service 

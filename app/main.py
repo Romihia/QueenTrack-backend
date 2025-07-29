@@ -8,6 +8,7 @@ from app.routes.test_routes import router as test_router
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
+import asyncio
 from typing import List
 from pathlib import Path
 
@@ -61,6 +62,37 @@ app = FastAPI(
     version="2.0.0",
     description="Professional API for Queen Track bee monitoring system with dual camera session management and event coordination."
 )
+
+# Startup event handler for settings synchronization
+@app.on_event("startup")
+async def startup_event():
+    """Initialize and sync settings on startup"""
+    try:
+        logger.info("🔄 Starting settings synchronization on startup...")
+        
+        # Import here to avoid circular imports
+        try:
+            from app.services.settings_service import get_settings_service
+            from app.services.email_service import get_email_service
+            
+            # Initialize and sync settings
+            settings_service = await get_settings_service()
+            await settings_service.sync_settings_on_startup()
+            
+            # Load email settings from database
+            email_service = get_email_service()
+            await email_service.load_settings_from_database()
+            
+            logger.info("✅ Settings synchronized successfully on startup")
+            
+        except ImportError as e:
+            logger.warning(f"⚠️ Settings service not available during startup: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error during startup settings sync: {e}")
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error during startup: {e}")
+        # Don't raise - let the server start even if settings sync fails
 
 # Videos directory already created above
 videos_dir = "/data/videos"

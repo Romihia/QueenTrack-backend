@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from threading import RLock
 import uuid
+from app.services.timezone_service import get_local_now
 
 from app.services.camera_session_manager import camera_session_manager
 from app.services.websocket_connection_manager import websocket_connection_manager
@@ -49,13 +50,13 @@ class EventCoordinator:
                     return self.active_events[session_id]["event_id"]
                 
                 # Generate unique event ID
-                event_id = f"event_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                event_id = f"event_{get_local_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
                 
                 # Create event record
                 event_data = {
                     "event_id": event_id,
                     "session_id": session_id,
-                    "start_time": datetime.now(),
+                    "start_time": get_local_now(),
                     "trigger_data": trigger_data,
                     "status": "starting",
                     "cameras_recording": {},
@@ -107,7 +108,7 @@ class EventCoordinator:
                 logger.info(f"🏁 Ending event {event_id} for session {session_id}")
                 
                 # Update event data
-                event_data["end_time"] = datetime.now()
+                event_data["end_time"] = get_local_now()
                 event_data["end_trigger_data"] = trigger_data
                 event_data["status"] = "ending"
                 
@@ -165,7 +166,7 @@ class EventCoordinator:
                 return {
                     "internal_started": bool(recording_paths.get('internal_video')),
                     "external_started": bool(recording_paths.get('external_video')),
-                    "start_time": datetime.now().isoformat()
+                    "start_time": get_local_now().isoformat()
                 }
             else:
                 logger.error(f"Failed to start recording for event {event_id}")
@@ -189,7 +190,7 @@ class EventCoordinator:
                 return {
                     "internal_video_path": recording_result.get('internal_video'),
                     "external_video_path": recording_result.get('external_video'),
-                    "stop_time": datetime.now().isoformat()
+                    "stop_time": get_local_now().isoformat()
                 }
             else:
                 logger.error(f"Failed to stop recording for event {event_id}")
@@ -206,7 +207,7 @@ class EventCoordinator:
                 "type": "event_started",
                 "event_id": event_id,
                 "session_id": session_id,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": get_local_now().isoformat(),
                 "bee_status": trigger_data.get("bee_status", "unknown"),
                 "recording_active": True
             }
@@ -224,7 +225,7 @@ class EventCoordinator:
                 "type": "event_ended",
                 "event_id": event_id,
                 "session_id": session_id,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": get_local_now().isoformat(),
                 "bee_status": trigger_data.get("bee_status", "unknown"),
                 "recording_active": False
             }
@@ -242,7 +243,7 @@ class EventCoordinator:
                 "session_id": session_id,
                 "event_id": event_id,
                 "event_type": event_type,  # 'exit' or 'entrance'
-                "timestamp": datetime.now(),
+                "timestamp": get_local_now(),
                 "trigger_data": trigger_data,
                 "retry_count": 0
             }
@@ -256,8 +257,8 @@ class EventCoordinator:
     async def _save_event_to_database(self, event_data: Dict[str, Any]):
         """Save completed event to database"""
         try:
-            start_time = event_data.get("start_time", datetime.now())
-            end_time = event_data.get("end_time", datetime.now())
+            start_time = event_data.get("start_time", get_local_now())
+            end_time = event_data.get("end_time", get_local_now())
             
             # Create database event record
             event_create = EventCreate(
@@ -401,14 +402,14 @@ class EventCoordinator:
                 # Update event data
                 event_data["status"] = "cancelled"
                 event_data["cancellation_reason"] = reason
-                event_data["end_time"] = datetime.now()
+                event_data["end_time"] = get_local_now()
                 
                 # Notify cameras
                 await websocket_connection_manager.broadcast_to_session(session_id, {
                     "type": "event_cancelled",
                     "event_id": event_id,
                     "reason": reason,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": get_local_now().isoformat()
                 })
                 
                 # Move to history and clean up
