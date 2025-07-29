@@ -411,7 +411,8 @@ def find_bee_location_in_frame(frame):
 
 def process_frame(frame):
     """Process video frame with configurable settings"""
-    current_time = datetime.now()
+    from app.services.timezone_service import get_local_now
+    current_time = get_local_now()  # Use local time (+3 hours)
     bee_status = None
     
     try:
@@ -569,6 +570,12 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         # Send email notification if enabled (with timeout to prevent blocking)
         if current_settings.processing.email_notifications_enabled and current_settings.processing.email_on_exit:
             try:
+                # Ensure email service has latest settings from database
+                try:
+                    await email_service.load_settings_from_database()
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not load email settings from database: {e}")
+                
                 additional_info = {
                     "center_line_x": CENTER_LINE_X,
                     "event_type": "event_start",
@@ -644,6 +651,12 @@ async def handle_bee_event(event_action, current_status, current_time, bee_image
         # Send email notification for bee entrance if enabled (with timeout to prevent blocking)
         if current_settings.processing.email_notifications_enabled and current_settings.processing.email_on_entrance:
             try:
+                # Ensure email service has latest settings from database
+                try:
+                    await email_service.load_settings_from_database()
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not load email settings from database: {e}")
+                
                 additional_info = {
                     "center_line_x": CENTER_LINE_X,
                     "event_type": "event_end",
