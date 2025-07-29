@@ -49,6 +49,27 @@ class EventDB(EventBase):
 
 # Settings Schemas for MongoDB
 
+class SettingsBase(BaseModel):
+    """Base settings schema"""
+    processing: Optional[Dict[str, Any]] = None
+    camera_config: Optional[Dict[str, Any]] = None
+
+class SettingsCreate(SettingsBase):
+    """Schema for creating new settings"""
+    pass
+
+class SettingsUpdate(SettingsBase):
+    """Schema for updating settings (all fields optional)"""
+    pass
+
+class SettingsResponse(SettingsBase):
+    """Schema for settings response"""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    
+    class Config:
+        populate_by_name = True
+
 class ProcessingSettingsDB(BaseModel):
     """הגדרות עיבוד לשמירה במונגו"""
     # Detection and Classification Settings
