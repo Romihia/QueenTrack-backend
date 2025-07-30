@@ -52,7 +52,7 @@ class CameraSynchronizer:
         }
         
         # Configuration
-        self.max_drift_threshold = 100  # milliseconds
+        self.max_drift_threshold = 2000  # milliseconds
         self.sync_window = 50  # milliseconds - frames within this window are considered synchronized
         
         logger.info(f"🎬 CameraSynchronizer initialized for session {session_id}")
